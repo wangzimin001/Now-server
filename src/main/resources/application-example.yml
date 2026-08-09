@@ -1,0 +1,6 @@
+# Use environment variables in local/production environments. Never commit real passwords.
+DB_URL: jdbc:mysql://127.0.0.1:3306/now_app?useUnicode=true&characterEncoding=utf8&serverTimezone=UTC&useSSL=false&allowPublicKeyRetrieval=true
+DB_USERNAME: root
+DB_PASSWORD: change-me
+SERVER_PORT: 8081
+FLYWAY_ENABLED: false
