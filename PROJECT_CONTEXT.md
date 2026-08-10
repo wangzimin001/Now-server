@@ -4,9 +4,9 @@
 
 ## 项目配对
 
-- 前端本地目录：`C:\编程\Now\Now-web`
+- 前端本地目录：`D:\codes\Now\Now-web`
 - 前端仓库：<https://github.com/wangzimin001/Now-web>
-- 后端本地目录：`C:\编程\Now\Now-server`
+- 后端本地目录：`D:\codes\Now\Now-server`
 - 后端仓库：<https://github.com/wangzimin001/Now-server>
 - 默认分支：`main`
 
@@ -47,3 +47,13 @@ mvn test
 - Maven 依赖通过阿里云镜像下载；
 - MySQL 8.0.33 客户端可用，`MySQL80` 服务正在 3306 端口运行；
 - 当前仍只有健康检查和空基线迁移，下一步先验证前端运行，再设计训练记录 MVP。
+
+## 2026-08-10 本机运行记录
+
+- 后端已使用 Microsoft OpenJDK 17.0.10 和 Maven 启动，监听 `8081` 端口；
+- `GET http://127.0.0.1:8081/api/v1/health` 已实际返回 `UP`；
+- MuMu Android 15 模拟器已验证可以连接宿主机 `10.0.2.2:8081`；手机端调用本机后端时应使用该宿主机地址，不能使用模拟器自己的 `127.0.0.1`；
+- 当前启动进程未设置 `DB_PASSWORD`。由于数据源是延迟连接，HTTP 服务可以启动，但 `GET /actuator/health` 会因 MySQL 拒绝空密码而返回 `DOWN`；自定义健康接口的 `UP` 不代表数据库已连接；
+- 需要数据库功能时，在启动后端的同一个 PowerShell 窗口执行 `$env:DB_PASSWORD = Read-Host '请输入本机 MySQL 密码（仅当前窗口有效）'`，再执行 `mvn spring-boot:run`；不要把密码直接写在命令、配置文件、文档或 Git 中；
+- Maven 首次运行依赖已通过阿里云镜像下载完成，后续启动会更快；
+- 下一步先确认本机 MySQL 中存在 `now_app` 数据库，再启用 Flyway 并实现第一批业务表和接口。
