@@ -57,3 +57,10 @@ mvn test
 - 需要数据库功能时，在启动后端的同一个 PowerShell 窗口执行 `$env:DB_PASSWORD = Read-Host '请输入本机 MySQL 密码（仅当前窗口有效）'`，再执行 `mvn spring-boot:run`；不要把密码直接写在命令、配置文件、文档或 Git 中；
 - Maven 首次运行依赖已通过阿里云镜像下载完成，后续启动会更快；
 - 下一步先确认本机 MySQL 中存在 `now_app` 数据库，再启用 Flyway 并实现第一批业务表和接口。
+
+## 2026-08-10 MySQL 凭据核对
+
+- MySQL Workbench 的本机连接配置确认为 `root@localhost:3306`；
+- 用户提供的密码已仅在临时进程环境中进行验证，本机 MySQL 返回 `Access denied`；密码内容未写入文件、日志或 Git；
+- 当前后端 HTTP 服务仍可运行，但数据库连接和 Actuator 数据库健康检查仍为 `DOWN`；
+- 下一步需要用户确认正确密码，或明确授权重置本机 MySQL `root` 密码后，再创建/检查 `now_app` 数据库并重启后端。
