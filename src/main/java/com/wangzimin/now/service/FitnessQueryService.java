@@ -11,7 +11,9 @@ import java.util.List;
 import java.util.Map;
 
 import org.springframework.jdbc.core.simple.JdbcClient;
+import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
+import org.springframework.web.server.ResponseStatusException;
 
 @Service
 public class FitnessQueryService {
@@ -37,7 +39,8 @@ public class FitnessQueryService {
                         LIMIT 1
                         """)
                 .query(PlanRow.class)
-                .single();
+                .optional()
+                .orElse(new PlanRow(0L, "暂无训练模板", 0, 3, 0));
 
         int completedThisWeek = jdbcClient.sql("""
                         SELECT COUNT(*)
@@ -97,6 +100,13 @@ public class FitnessQueryService {
                         plan.level(),
                         exercisesByPlan.getOrDefault(plan.id(), List.of())))
                 .toList();
+    }
+
+    public WorkoutPlanResponse workoutPlan(Long planId) {
+        return workoutPlans().stream()
+                .filter(plan -> plan.id().equals(planId))
+                .findFirst()
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "训练模板不存在"));
     }
 
     public ExercisePageResponse exercises(String category, String keyword, Integer page, Integer limit) {

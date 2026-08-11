@@ -93,3 +93,14 @@ mvn test
 - 本机 `now_app` 已按 V1、V2、V3、V4 顺序完成迁移，动作总数和各分类数量已通过 MySQL 查询核对；数据库凭据仅通过临时环境变量使用，没有写入代码、文档或 Git；
 - `mvn test` 通过（2 个测试、0 失败），`mvn -DskipTests package` 成功，服务监听 `8081`，Actuator 健康状态实测为 `UP`；
 - 动作元数据、程序和文字属于 MIT 范围；图片与 GIF 属于 Gym visual，不属于 MIT。应用继续展示 `© Gym visual — https://gymvisual.com/`，公开或商业发布前必须确认单独媒体授权。
+
+## 2026-08-11 训练模板写接口与训练记录落库
+
+- 新增 `WorkoutService` 承担写操作，模板查询仍由 `FitnessQueryService` 负责，避免读写逻辑继续集中在单个类中；
+- 新增 `POST /api/v1/workout-plans`、`PUT /api/v1/workout-plans/{planId}`、`DELETE /api/v1/workout-plans/{planId}`；删除采用 `is_active = FALSE` 软删除，历史训练保留原模板引用；
+- 新增 `POST /api/v1/workouts`，在一个事务中写入 `workout_session`、`session_exercise` 和 `set_record`，服务端按已完成组重新计算训练容量，未完成组保存为 `SKIPPED`；
+- 模板写请求校验名称、预计时长、动作数量、组数、次数和休息秒数；更新已停用模板返回不存在，模板动作替换失败时事务会回滚；
+- 删除全部模板时首页查询会返回“暂无训练模板”占位数据，不再因单行查询为空而报错；
+- 现有 V2 表结构已经覆盖上述数据，不需要新增数据库迁移；
+- `mvn test` 通过：4 个测试、0 失败；真实 MySQL 已验证模板创建、编辑、停用和训练完成事务，验证产生的临时模板、动作组和训练历史均已按精确 ID 清理；
+- 最新 JAR 已重新启动在 `8081`，`/actuator/health` 为 `UP`，活动模板 3 个、历史 3 条，与联调前一致；数据库凭据没有写入源码、文档或 Git。
