@@ -99,13 +99,61 @@ public class FitnessQueryService {
                 .toList();
     }
 
-    public List<ExerciseResponse> exercises() {
-        return jdbcClient.sql("""
-                        SELECT id, name, muscle_group AS muscleGroup, equipment, level, instructions
-                        FROM exercise
-                        ORDER BY id
+    public ExercisePageResponse exercises(String category, String keyword, Integer page, Integer limit) {
+        int safePage = page == null ? 1 : Math.max(page, 1);
+        int safeLimit = limit == null ? 20 : Math.min(Math.max(limit, 1), 50);
+        int offset = (safePage - 1) * safeLimit;
+        String categoryFilter = category == null ? "" : category.trim();
+        String keywordFilter = keyword == null ? "" : keyword.trim();
+
+        String whereSql = """
+                FROM exercise
+                WHERE source = 'exercise-dataset'
+                  AND (:category = '' OR category_code = :category)
+                  AND (
+                    :keyword = ''
+                    OR name LIKE CONCAT('%', :keyword, '%')
+                    OR name_en LIKE CONCAT('%', :keyword, '%')
+                    OR equipment LIKE CONCAT('%', :keyword, '%')
+                    OR target_name LIKE CONCAT('%', :keyword, '%')
+                  )
+                """;
+
+        long total = jdbcClient.sql("SELECT COUNT(*) " + whereSql)
+                .param("category", categoryFilter)
+                .param("keyword", keywordFilter)
+                .query(Long.class)
+                .single();
+
+        List<ExerciseResponse> data = jdbcClient.sql("""
+                        SELECT id, source_exercise_id AS sourceExerciseId, name, name_en AS nameEn,
+                               category_code AS categoryCode, category_name AS categoryName,
+                               muscle_group AS muscleGroup, equipment, target_name AS targetName,
+                               instructions, gif_url AS gifUrl, attribution
+                        """ + whereSql + """
+                        ORDER BY category_sort, popularity_rank, id
+                        LIMIT :limit OFFSET :offset
                         """)
+                .param("category", categoryFilter)
+                .param("keyword", keywordFilter)
+                .param("limit", safeLimit)
+                .param("offset", offset)
                 .query(ExerciseResponse.class)
+                .list();
+
+        int totalPages = total == 0 ? 0 : (int) Math.ceil((double) total / safeLimit);
+        return new ExercisePageResponse(data, total, safePage, safeLimit, totalPages);
+    }
+
+    public List<ExerciseCategory> exerciseCategories() {
+        return jdbcClient.sql("""
+                        SELECT category_code AS code, category_name AS name, COUNT(*) AS exerciseCount
+                        FROM exercise
+                        WHERE source = 'exercise-dataset'
+                        GROUP BY category_code, category_name
+                        ORDER BY MIN(category_sort)
+                        """)
+                .query(ExerciseCategory.class)
                 .list();
     }
 
@@ -170,8 +218,16 @@ public class FitnessQueryService {
             Integer targetReps, Integer restSeconds) {
     }
 
-    public record ExerciseResponse(Long id, String name, String muscleGroup, String equipment, String level,
-            String instructions) {
+    public record ExercisePageResponse(List<ExerciseResponse> data, Long total, Integer page, Integer limit,
+            Integer totalPages) {
+    }
+
+    public record ExerciseCategory(String code, String name, Long exerciseCount) {
+    }
+
+    public record ExerciseResponse(Long id, String sourceExerciseId, String name, String nameEn,
+            String categoryCode, String categoryName, String muscleGroup, String equipment, String targetName,
+            String instructions, String gifUrl, String attribution) {
     }
 
     public record WorkoutHistoryItem(Long id, String name, LocalDateTime completedAt, Integer durationMinutes,

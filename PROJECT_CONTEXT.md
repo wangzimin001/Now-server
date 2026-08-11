@@ -83,3 +83,13 @@ mvn test
 1. 新增开始训练、保存组记录和完成训练的写接口。
 2. 前端本地优先保存，网络恢复后再幂等同步服务端。
 3. 在训练记录闭环稳定后再设计“此刻”自己的账号和鉴权。
+
+## 2026-08-11 动作数据库接入
+
+- 已根据 `D:\codes\Now\exercises-dataset-main` 导入 1,324 个动作，生成脚本为 `scripts/generate-exercise-library.mjs`，生成迁移为 `V4__exercise_dataset.sql`；最近一次生成检查未发现未翻译的英文词元；
+- `V3__extend_exercise_library.sql` 扩展动作表，保存来源动作 ID、英文名、中文分类、器械、目标肌群、辅助肌群、中文/英文动作要领、图片和 GIF 地址、媒体署名及常用度排序；
+- 分类顺序为胸部、背部、肩部、大腿、上臂、腰腹、小腿、前臂、有氧、颈部；分类数量合计 1,324，查询默认按分类和常用度排序；
+- 新增 `GET /api/v1/exercise-categories`，`GET /api/v1/exercises` 支持 `category`、`keyword`、`page`、`limit` 并返回分页结果；
+- 本机 `now_app` 已按 V1、V2、V3、V4 顺序完成迁移，动作总数和各分类数量已通过 MySQL 查询核对；数据库凭据仅通过临时环境变量使用，没有写入代码、文档或 Git；
+- `mvn test` 通过（2 个测试、0 失败），`mvn -DskipTests package` 成功，服务监听 `8081`，Actuator 健康状态实测为 `UP`；
+- 动作元数据、程序和文字属于 MIT 范围；图片与 GIF 属于 Gym visual，不属于 MIT。应用继续展示 `© Gym visual — https://gymvisual.com/`，公开或商业发布前必须确认单独媒体授权。
