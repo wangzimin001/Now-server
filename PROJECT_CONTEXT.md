@@ -1,6 +1,6 @@
 # Now-server（此刻后端）项目长期上下文
 
-更新日期：2026-08-10
+更新日期：2026-08-11
 
 ## 项目配对
 
@@ -104,3 +104,14 @@ mvn test
 - 现有 V2 表结构已经覆盖上述数据，不需要新增数据库迁移；
 - `mvn test` 通过：4 个测试、0 失败；真实 MySQL 已验证模板创建、编辑、停用和训练完成事务，验证产生的临时模板、动作组和训练历史均已按精确 ID 清理；
 - 最新 JAR 已重新启动在 `8081`，`/actuator/health` 为 `UP`，活动模板 3 个、历史 3 条，与联调前一致；数据库凭据没有写入源码、文档或 Git。
+
+## 2026-08-11 训练模板使用统计与动作 GIF
+
+- `GET /api/v1/workout-plans` 新增模板级 `usageCount` 和 `lastUsedAt`，分别表示已完成训练的累计次数与最近一次完成时间；从未使用的模板返回 `0` 和 `null`；
+- 使用统计通过按 `plan_id` 独立聚合 `workout_session` 中 `COMPLETED` 记录后再关联模板，避免与模板动作明细连接时重复计数；
+- 模板动作响应新增 `gifUrl`，来自动作表的 GIF 地址，供训练台纵向模板卡片展示；
+- 模板与 `plan_exercise` 仍只保存动作 ID 和训练参数，不保存 GIF 地址；查询时通过 `exercise` 动作库关联取得 GIF；
+- 新增 `V5__map_legacy_plan_exercises_to_dataset.sql`，把 V2 的 8 个旧模板动作 ID 映射到 V4 正式动作库 ID；历史 `session_exercise` 快照和旧动作记录保持不变；
+- 新增 `FitnessQueryServiceTest` 覆盖使用次数、最近使用时间、GIF 映射与独立聚合 SQL；`mvn test` 通过（5 个测试、0 失败）；
+- 当前监听 `8081` 的仍是修改前启动的旧 JAR，因此当前进程的模板响应尚无新字段；下次按安全方式提供数据库环境变量并重启后端时，Flyway 会应用 V5，新的统计和 GIF 查询随新进程生效；
+- `mvn -DskipTests package` 已完成编译与普通 JAR 生成，但 Spring Boot 重打包因当前运行中的旧 JAR 被 Windows 锁定而无法重命名；这是进程文件锁，不是编译或测试失败，停止旧进程后可重新打包。

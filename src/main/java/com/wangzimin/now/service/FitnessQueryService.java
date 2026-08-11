@@ -67,10 +67,19 @@ public class FitnessQueryService {
 
     public List<WorkoutPlanResponse> workoutPlans() {
         List<WorkoutPlanRow> plans = jdbcClient.sql("""
-                        SELECT id, name, description, estimated_minutes AS estimatedMinutes, level
-                        FROM workout_plan
-                        WHERE is_active = TRUE
-                        ORDER BY id
+                        SELECT wp.id, wp.name, wp.description,
+                               wp.estimated_minutes AS estimatedMinutes, wp.level,
+                               COALESCE(plan_usage.usage_count, 0) AS usageCount,
+                               plan_usage.last_used_at AS lastUsedAt
+                        FROM workout_plan wp
+                        LEFT JOIN (
+                            SELECT plan_id, COUNT(*) AS usage_count, MAX(ended_at) AS last_used_at
+                            FROM workout_session
+                            WHERE status = 'COMPLETED'
+                            GROUP BY plan_id
+                        ) plan_usage ON plan_usage.plan_id = wp.id
+                        WHERE wp.is_active = TRUE
+                        ORDER BY wp.id
                         """)
                 .query(WorkoutPlanRow.class)
                 .list();
@@ -78,7 +87,19 @@ public class FitnessQueryService {
         List<PlanExercise> planExercises = jdbcClient.sql("""
                         SELECT pe.plan_id AS planId, e.id, e.name, e.muscle_group AS muscleGroup,
                                pe.target_sets AS targetSets, pe.target_reps AS targetReps,
-                               pe.rest_seconds AS restSeconds
+                               pe.rest_seconds AS restSeconds,
+                               COALESCE(
+                                   NULLIF(e.gif_url, ''),
+                                   (
+                                       SELECT gif_candidate.gif_url
+                                       FROM exercise gif_candidate
+                                       WHERE gif_candidate.name = e.name
+                                         AND gif_candidate.gif_url IS NOT NULL
+                                         AND gif_candidate.gif_url <> ''
+                                       ORDER BY gif_candidate.id DESC
+                                       LIMIT 1
+                                   )
+                               ) AS gifUrl
                         FROM plan_exercise pe
                         JOIN exercise e ON e.id = pe.exercise_id
                         ORDER BY pe.plan_id, pe.exercise_order
@@ -98,6 +119,8 @@ public class FitnessQueryService {
                         plan.description(),
                         plan.estimatedMinutes(),
                         plan.level(),
+                        plan.usageCount(),
+                        plan.lastUsedAt(),
                         exercisesByPlan.getOrDefault(plan.id(), List.of())))
                 .toList();
     }
@@ -200,7 +223,8 @@ public class FitnessQueryService {
             Integer exerciseCount) {
     }
 
-    private record WorkoutPlanRow(Long id, String name, String description, Integer estimatedMinutes, String level) {
+    record WorkoutPlanRow(Long id, String name, String description, Integer estimatedMinutes, String level,
+            Long usageCount, LocalDateTime lastUsedAt) {
     }
 
     public record DashboardResponse(TodayPlan todayPlan, List<Metric> metrics, WeekSummary week,
@@ -221,11 +245,21 @@ public class FitnessQueryService {
     }
 
     public record WorkoutPlanResponse(Long id, String name, String description, Integer estimatedMinutes,
-            String level, List<PlanExercise> exercises) {
+            String level, Long usageCount, LocalDateTime lastUsedAt, List<PlanExercise> exercises) {
+
+        public WorkoutPlanResponse(Long id, String name, String description, Integer estimatedMinutes,
+                String level, List<PlanExercise> exercises) {
+            this(id, name, description, estimatedMinutes, level, 0L, null, exercises);
+        }
     }
 
     public record PlanExercise(Long planId, Long id, String name, String muscleGroup, Integer targetSets,
-            Integer targetReps, Integer restSeconds) {
+            Integer targetReps, Integer restSeconds, String gifUrl) {
+
+        public PlanExercise(Long planId, Long id, String name, String muscleGroup, Integer targetSets,
+                Integer targetReps, Integer restSeconds) {
+            this(planId, id, name, muscleGroup, targetSets, targetReps, restSeconds, null);
+        }
     }
 
     public record ExercisePageResponse(List<ExerciseResponse> data, Long total, Integer page, Integer limit,
