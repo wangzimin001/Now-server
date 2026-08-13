@@ -1,13 +1,19 @@
 # Now-server（此刻后端）项目长期上下文
 
-更新日期：2026-08-11
+更新日期：2026-08-13
+
+## 2026-08-13 GitHub 迁移告知
+
+- 新增 `REPOSITORY_MIGRATION.md`，并在 `README.md` 顶部加入入口，明确 Gitee 为主仓库、GitHub 为备用镜像，提供旧 GitHub 克隆切换到 Gitee 的命令，概括迁移后的已提交后端能力，并明确当前未提交的分类开发不会随远端同步。
 
 ## 项目配对
 
 - 前端本地目录：`D:\codes\Now\Now-web`
-- 前端仓库：<https://github.com/wangzimin001/Now-web>
+- 前端 Gitee 主仓库：<https://gitee.com/zem_wang/Now-web>
+- 前端 GitHub 备用仓库：<https://github.com/wangzimin001/Now-web>
 - 后端本地目录：`D:\codes\Now\Now-server`
-- 后端仓库：<https://github.com/wangzimin001/Now-server>
+- 后端 Gitee 主仓库：<https://gitee.com/zem_wang/Now-server>
+- 后端 GitHub 备用仓库：<https://github.com/wangzimin001/Now-server>
 - 默认分支：`main`
 
 ## 当前状态
@@ -115,3 +121,39 @@ mvn test
 - 新增 `FitnessQueryServiceTest` 覆盖使用次数、最近使用时间、GIF 映射与独立聚合 SQL；`mvn test` 通过（5 个测试、0 失败）；
 - 当前监听 `8081` 的仍是修改前启动的旧 JAR，因此当前进程的模板响应尚无新字段；下次按安全方式提供数据库环境变量并重启后端时，Flyway 会应用 V5，新的统计和 GIF 查询随新进程生效；
 - `mvn -DskipTests package` 已完成编译与普通 JAR 生成，但 Spring Boot 重打包因当前运行中的旧 JAR 被 Windows 锁定而无法重命名；这是进程文件锁，不是编译或测试失败，停止旧进程后可重新打包。
+
+## 2026-08-12 CodeGraph 代码索引
+
+- 已使用 CodeGraph 1.5.0 在后端仓库根目录建立 `.codegraph/` 本地代码索引，支持 Java、JavaScript 与 Maven XML 的符号和调用关系检索；
+- 已通过 `codegraph explore` 验证 `completeWorkout`、控制器入口、服务方法和对应测试之间的调用路径可以正确返回；
+- 新增 `codegraph.json`，明确排除 `src/main/resources/application*.yml`，运行配置不会进入图数据库；数据库凭据仍只允许通过环境变量使用；
+- 根目录 `.gitignore` 已忽略 `.codegraph/`，索引数据库只保存在本机，不进入版本控制；
+- 后续理解或定位代码时，仓库存在 `.codegraph/` 应优先使用 `codegraph explore`，源码修改后运行 `codegraph sync` 保持索引同步。
+
+## 2026-08-13 胸部动作二级分类
+
+- 新增 Flyway `V7__add_chest_regions.sql`，在动作表中以 JSON 数组保存胸部动作的“上胸／中胸／下胸”二级分类，一级 `category_code=chest` 保持不变；
+- 新增可复现分类脚本 `scripts/classify-chest-regions.mjs`，按上斜、水平、下斜、绳索轨迹和俯卧撑身体角度为 163 个胸部条目审计；153 个资料充分的动作获得 1–2 个二级标签；
+- 10 个源数据目标肌或轨迹不足的条目保持未分类，不强行推断；它们仍会出现在胸部全部列表，但不会出现在具体二级筛选中；
+- `GET /api/v1/exercises` 新增可选 `chestRegion` 参数，使用 `JSON_CONTAINS` 筛选；响应新增结构化 `chestRegions` 数组，双标签动作只返回一条记录；
+- 数据库迁移尚未在本机真实数据库执行，未读取或使用任何数据库凭据；待正常启动后端时由 Flyway 自动应用；
+- Maven 测试通过（5 个测试、0 失败）；当前修改未提交，需配合前端完成手动联调验收。
+
+## 2026-08-13 胸部二级筛选运行态诊断
+
+- 对当前监听 `8081` 的服务分别请求上胸、中胸、下胸，三次均返回胸部全部 `163` 条且首批数据一致，响应也没有新版 `chestRegions` 字段；
+- 已确认当前运行的是修改前的旧后端进程，旧接口会忽略陌生的 `chestRegion` 参数，因此前端页签虽已切换，服务端结果不会变化；
+- 当前主任务环境不存在可安全继承的 `DB_URL`、`DB_USERNAME`、`DB_PASSWORD`，未读取、复制或输出任何数据库凭据，也未停止现有服务；
+- 修复代码和 V7 迁移已就绪且 Maven 测试通过；需在原本设置数据库环境变量的终端安全重启后端，Flyway 应用 V7 后二级筛选才会生效。
+
+## 2026-08-13 背部动作二级分类
+
+- 新增 V8 迁移和 `scripts/classify-back-regions.mjs`，为全部 203 个背部动作增加“背阔肌／上背部／斜方肌／下背部”结构化标签，一级背部分类不变；
+- 分类首先依据源数据目标：背阔肌 81、上背部 88、斜方肌 15、竖脊肌 19；再按划船、辅助菱形肌/后束、肩胛控制等信息补充第二标签，每个动作最多两个；
+- 203 个动作资料均可判断，待确认动作 0 个；最终标签命中为背阔肌 159、上背部 112、斜方肌 15、下背部 19，其中 102 个动作为双标签；
+- 动作接口新增 `backRegion` 参数和 `backRegions` 响应数组；V8 尚未实际连接数据库执行，等待后端安全重启后由 Flyway 应用。
+- 2026-08-13 肩部二级分类：一级 `shoulders` 保持不变，新增“前束／中束／后束”标签、`shoulderRegion` 查询参数与 `shoulderRegions` 响应。`scripts/classify-shoulder-regions.mjs` 生成 V9；143 个动作中 130 个已分类（前束 74、中束 88、后束 29，61 个双标签），13 个资料不足动作保留未分类。Maven 5 项测试和 `git diff --check` 通过，CodeGraph 已同步；未读取凭据或重启旧服务，V9 待后续安全启动时应用。
+- 2026-08-13 大腿二级分类：一级 `upper legs` 保持不变，新增“股四头肌／腘绳肌／臀肌／内收肌／外展肌”、`thighRegion` 查询参数及 `thighRegions` 响应。`scripts/classify-thigh-regions.mjs` 生成 V10；227 个动作全部完成分类（股四头肌 112、腘绳肌 67、臀肌 179、内收肌 6、外展肌 5，142 个双标签），无待确认动作。Maven 5 项测试和 `git diff --check` 通过；未读取凭据或重启旧服务，V10 待安全启动时应用。
+- 2026-08-13 腰腹二级分类：一级 `waist` 保持不变，新增“上腹／下腹／腹斜肌／核心稳定／下背部”、`waistRegion` 查询参数及 `waistRegions` 响应。`scripts/classify-waist-regions.mjs` 生成 V11；169 个动作中 165 个已分类（上腹 78、下腹 37、腹斜肌 55、核心稳定 39、下背部 0，44 个双标签），4 个非腰腹或资料不足动作保留未分类。当前腰腹数据没有真正下背目标动作，不强行误标；下背训练仍在背部分类。Maven 5 项测试和 `git diff --check` 通过；未读取凭据或重启旧服务。
+- 2026-08-13 上臂二级分类：一级 `upper arms` 保持不变，新增“二头内侧／二头外侧／三头”、`upperArmRegion` 查询参数及 `upperArmRegions` 响应。`scripts/classify-upper-arm-regions.mjs` 生成 V12；292 个动作中 240 个完成分类（二头内侧 81、二头外侧 60、三头 141，42 个二头双标签）。52 个锤式、反握、佐特曼、腕屈伸或翻举动作主要强调肱肌/肱桡肌，只保留在“全部”。Maven 5 项测试和 `git diff --check` 通过；未读取凭据或重启旧服务。
+- 2026-08-13 小腿与小臂分类、手臂命名：新增 V13 小腿标签“腓肠肌／比目鱼肌／胫骨前肌／踝部稳定”和 V14 小臂标签“腕屈肌／腕伸肌／旋前旋后／握力”，接口新增 `calfRegion`、`forearmRegion` 及对应响应数组。59 个小腿动作全部分类（39/28/4/5，17 个双标签）；37 个小臂动作中 35 个分类（15/10/6/5，1 个双标签），2 个资料不足动作仅保留在全部。V14 同时把中文一级分类“上臂/前臂”更新为“大臂/小臂”，英文分类码不变。Maven 5 项测试和 `git diff --check` 通过；未读取凭据或重启旧服务。
