@@ -16,6 +16,8 @@ import java.util.stream.Stream;
 import com.wangzimin.now.service.FitnessQueryService;
 import com.wangzimin.now.service.FitnessQueryService.ExercisePageResponse;
 import com.wangzimin.now.service.FitnessQueryService.ExerciseResponse;
+import com.wangzimin.now.service.FitnessQueryService.LatestExercisePerformance;
+import com.wangzimin.now.service.FitnessQueryService.LatestPerformanceSet;
 import com.wangzimin.now.service.FitnessQueryService.PlanExercise;
 import com.wangzimin.now.service.FitnessQueryService.WorkoutHistoryItem;
 import com.wangzimin.now.service.FitnessQueryService.WorkoutPlanResponse;
@@ -109,6 +111,24 @@ class FitnessControllerTest {
         assertEquals(90, request.exercises().get(0).sets().get(0).restDurationSeconds());
         assertSame(response, controller.completeWorkout(jwt, request));
         verify(workoutService).completeWorkout(7L, request);
+    }
+
+    @Test
+    void delegatesLatestExercisePerformanceForCurrentUser() {
+        FitnessQueryService queryService = mock(FitnessQueryService.class);
+        WorkoutService workoutService = mock(WorkoutService.class);
+        Jwt jwt = jwt(7L);
+        List<Long> exerciseIds = List.of(100025L, 100026L);
+        List<LatestExercisePerformance> expected = List.of(new LatestExercisePerformance(
+                100025L,
+                java.time.LocalDateTime.of(2026, 8, 14, 12, 0),
+                List.of(new LatestPerformanceSet(1, BigDecimal.valueOf(60), 8))));
+        when(queryService.latestExercisePerformances(7L, exerciseIds)).thenReturn(expected);
+
+        FitnessController controller = new FitnessController(queryService, workoutService);
+
+        assertSame(expected, controller.latestExercisePerformances(jwt, exerciseIds));
+        verify(queryService).latestExercisePerformances(7L, exerciseIds);
     }
 
     private Jwt jwt(Long userId) {

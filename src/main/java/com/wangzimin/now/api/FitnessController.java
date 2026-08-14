@@ -8,6 +8,7 @@ import com.wangzimin.now.service.FitnessQueryService.ExerciseCategory;
 import com.wangzimin.now.service.FitnessQueryService.ExercisePageResponse;
 import com.wangzimin.now.service.FitnessQueryService.WorkoutHistoryItem;
 import com.wangzimin.now.service.FitnessQueryService.WorkoutHistoryDetail;
+import com.wangzimin.now.service.FitnessQueryService.LatestExercisePerformance;
 import com.wangzimin.now.service.FitnessQueryService.WorkoutPlanResponse;
 import com.wangzimin.now.service.WorkoutService;
 import com.wangzimin.now.service.WorkoutService.WorkoutCompletionRequest;
@@ -114,6 +115,13 @@ public class FitnessController {
     @GetMapping("/workouts/history/{sessionId}")
     public WorkoutHistoryDetail historyDetail(@AuthenticationPrincipal Jwt jwt, @PathVariable Long sessionId) {
         return fitnessQueryService.historyDetail(sessionId, userId(jwt));
+    }
+
+    @GetMapping("/workouts/latest-performance")
+    public List<LatestExercisePerformance> latestExercisePerformances(
+            @AuthenticationPrincipal Jwt jwt,
+            @RequestParam List<Long> exerciseIds) {
+        return fitnessQueryService.latestExercisePerformances(userId(jwt), exerciseIds);
     }
 
     @PostMapping("/workouts")

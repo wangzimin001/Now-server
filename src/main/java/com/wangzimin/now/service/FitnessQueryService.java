@@ -7,7 +7,9 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 
@@ -465,6 +467,63 @@ public class FitnessQueryService {
                 session.totalVolumeKg(), exercises);
     }
 
+    public List<LatestExercisePerformance> latestExercisePerformances(Long userId, Collection<Long> exerciseIds) {
+        List<Long> normalizedIds = exerciseIds == null ? List.of() : new ArrayList<>(new LinkedHashSet<>(exerciseIds.stream()
+                .filter(id -> id != null && id > 0)
+                .toList()));
+        if (normalizedIds.isEmpty()) return List.of();
+        if (normalizedIds.size() > 50) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "一次最多查询 50 个动作");
+        }
+
+        List<LatestPerformanceSetRow> rows = jdbcClient.sql("""
+                        WITH ranked_exercise AS (
+                            SELECT se.id AS sessionExerciseId, se.exercise_id AS exerciseId,
+                                   ws.ended_at AS completedAt,
+                                   ROW_NUMBER() OVER (
+                                       PARTITION BY se.exercise_id
+                                       ORDER BY ws.ended_at DESC, se.id DESC
+                                   ) AS performanceRank
+                            FROM session_exercise se
+                            JOIN workout_session ws ON ws.id = se.session_id
+                            WHERE ws.status = 'COMPLETED'
+                              AND ws.owner_user_id = :userId
+                              AND se.exercise_id IN (:exerciseIds)
+                              AND EXISTS (
+                                  SELECT 1 FROM set_record completed_set
+                                  WHERE completed_set.session_exercise_id = se.id
+                                    AND completed_set.status = 'COMPLETED'
+                              )
+                        )
+                        SELECT ranked.exerciseId, ranked.completedAt,
+                               sr.set_number AS setNumber, sr.weight_kg AS weightKg, sr.repetitions
+                        FROM ranked_exercise ranked
+                        JOIN set_record sr ON sr.session_exercise_id = ranked.sessionExerciseId
+                        WHERE ranked.performanceRank = 1 AND sr.status = 'COMPLETED'
+                        ORDER BY ranked.exerciseId, sr.set_number
+                        """)
+                .param("userId", userId)
+                .param("exerciseIds", normalizedIds)
+                .query(LatestPerformanceSetRow.class)
+                .list();
+
+        return rows.stream()
+                .collect(java.util.stream.Collectors.groupingBy(
+                        LatestPerformanceSetRow::exerciseId,
+                        LinkedHashMap::new,
+                        java.util.stream.Collectors.toList()))
+                .values()
+                .stream()
+                .map(exerciseRows -> {
+                    LatestPerformanceSetRow first = exerciseRows.get(0);
+                    List<LatestPerformanceSet> sets = exerciseRows.stream()
+                            .map(row -> new LatestPerformanceSet(row.setNumber(), row.weightKg(), row.repetitions()))
+                            .toList();
+                    return new LatestExercisePerformance(first.exerciseId(), first.completedAt(), sets);
+                })
+                .toList();
+    }
+
     private List<WeekDay> buildWeekDays() {
         LocalDate monday = LocalDate.now().with(DayOfWeek.MONDAY);
         String[] labels = { "一", "二", "三", "四", "五", "六", "日" };
@@ -488,6 +547,10 @@ public class FitnessQueryService {
     private record HistorySetRow(Long id, String name, Integer exerciseOrder, Integer setNumber,
             BigDecimal weightKg, Integer repetitions, Integer restDurationSeconds, String status,
             LocalDateTime completedAt) {
+    }
+
+    private record LatestPerformanceSetRow(Long exerciseId, LocalDateTime completedAt, Integer setNumber,
+            BigDecimal weightKg, Integer repetitions) {
     }
 
     record WorkoutPlanRow(Long id, String name, String description, Integer estimatedMinutes,
@@ -579,6 +642,13 @@ public class FitnessQueryService {
 
     public record WorkoutSetDetail(Integer setNumber, BigDecimal weightKg, Integer repetitions,
             Integer restDurationSeconds, String status, LocalDateTime completedAt) {
+    }
+
+    public record LatestExercisePerformance(Long exerciseId, LocalDateTime completedAt,
+            List<LatestPerformanceSet> sets) {
+    }
+
+    public record LatestPerformanceSet(Integer setNumber, BigDecimal weightKg, Integer repetitions) {
     }
 
     public record FormattedWorkout(Long id, String name, LocalDateTime completedAt, Integer durationMinutes,

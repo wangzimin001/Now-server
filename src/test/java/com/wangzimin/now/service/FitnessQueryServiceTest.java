@@ -107,4 +107,38 @@ class FitnessQueryServiceTest {
         assertTrue(exerciseSql.contains("JOIN exercise e ON e.id = pe.exercise_id"));
         assertFalse(exerciseSql.contains("pe.gif_url"));
     }
+
+    @Test
+    void latestPerformanceSkipsDatabaseWhenExerciseIdsAreEmpty() {
+        JdbcClient jdbcClient = mock(JdbcClient.class);
+
+        assertTrue(new FitnessQueryService(jdbcClient).latestExercisePerformances(7L, List.of()).isEmpty());
+
+        verify(jdbcClient, times(0)).sql(anyString());
+    }
+
+    @Test
+    @SuppressWarnings({ "rawtypes", "unchecked" })
+    void latestPerformanceUsesCurrentUserAndMostRecentCompletedExercise() {
+        JdbcClient jdbcClient = mock(JdbcClient.class);
+        JdbcClient.StatementSpec statement = mock(JdbcClient.StatementSpec.class);
+        JdbcClient.MappedQuerySpec query = mock(JdbcClient.MappedQuerySpec.class);
+        when(jdbcClient.sql(anyString())).thenReturn(statement);
+        when(statement.param(anyString(), any())).thenReturn(statement);
+        when(statement.query(any(Class.class))).thenReturn(query);
+        when(query.list()).thenReturn(List.of());
+
+        assertTrue(new FitnessQueryService(jdbcClient)
+                .latestExercisePerformances(7L, List.of(100025L, 100026L)).isEmpty());
+
+        var sqlCaptor = org.mockito.ArgumentCaptor.forClass(String.class);
+        verify(jdbcClient).sql(sqlCaptor.capture());
+        String sql = sqlCaptor.getValue();
+        assertTrue(sql.contains("ws.owner_user_id = :userId"));
+        assertTrue(sql.contains("PARTITION BY se.exercise_id"));
+        assertTrue(sql.contains("ORDER BY ws.ended_at DESC, se.id DESC"));
+        assertTrue(sql.contains("completed_set.status = 'COMPLETED'"));
+        assertTrue(sql.contains("ranked.performanceRank = 1"));
+        assertTrue(sql.contains("sr.status = 'COMPLETED'"));
+    }
 }
