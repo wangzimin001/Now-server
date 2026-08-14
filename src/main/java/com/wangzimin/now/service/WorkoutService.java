@@ -1,10 +1,15 @@
 package com.wangzimin.now.service;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.sql.Timestamp;
 import java.sql.Types;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
 
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.DecimalMin;
@@ -140,26 +145,29 @@ public class WorkoutService {
         }
 
         if (request.clientRecordId() != null && !request.clientRecordId().isBlank()) {
-            WorkoutCompletionResponse existing = jdbcClient.sql("""
+            ExistingWorkout existing = jdbcClient.sql("""
                             SELECT id, total_volume_kg AS totalVolumeKg
                             FROM workout_session
                             WHERE owner_user_id = :userId AND client_record_id = :clientRecordId
                             """)
                     .param("userId", userId, Types.BIGINT)
                     .param("clientRecordId", request.clientRecordId().trim())
-                    .query(WorkoutCompletionResponse.class)
+                    .query(ExistingWorkout.class)
                     .optional()
                     .orElse(null);
-            if (existing != null) return existing;
+            if (existing != null) return new WorkoutCompletionResponse(existing.id(), existing.totalVolumeKg(), List.of(), null);
         }
 
         validatePlanAccess(userId, request.planId());
+
+        List<ExercisePerformanceSummary> exerciseSummaries = evaluateExercisePerformance(userId, request.exercises());
 
         BigDecimal totalVolume = request.exercises().stream()
                 .flatMap(exercise -> exercise.sets().stream())
                 .filter(set -> Boolean.TRUE.equals(set.completed()))
                 .map(set -> set.weightKg().multiply(BigDecimal.valueOf(set.repetitions())))
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
+        WorkoutComparison comparison = compareWithPreviousWorkout(userId, request, totalVolume);
 
         KeyHolder sessionKeyHolder = new GeneratedKeyHolder();
         jdbcClient.sql("""
@@ -190,7 +198,224 @@ public class WorkoutService {
             insertSetRecords(sessionExerciseId, exercise.sets(), request.endedAt());
         }
 
-        return new WorkoutCompletionResponse(sessionId, totalVolume);
+        return new WorkoutCompletionResponse(sessionId, totalVolume, exerciseSummaries, comparison);
+    }
+
+    private WorkoutComparison compareWithPreviousWorkout(Long userId, WorkoutCompletionRequest request,
+            BigDecimal totalVolume) {
+        PreviousWorkout previous = jdbcClient.sql("""
+                        SELECT ws.total_volume_kg AS totalVolumeKg,
+                               ws.duration_minutes AS durationMinutes,
+                               SUM(CASE WHEN sr.status = 'COMPLETED' THEN 1 ELSE 0 END) AS completedSetCount
+                        FROM workout_session ws
+                        LEFT JOIN session_exercise se ON se.session_id = ws.id
+                        LEFT JOIN set_record sr ON sr.session_exercise_id = se.id
+                        WHERE ws.status = 'COMPLETED'
+                          AND ((:userId IS NULL AND ws.owner_user_id IS NULL) OR ws.owner_user_id = :userId)
+                          AND ((:planId IS NOT NULL AND ws.plan_id = :planId)
+                               OR (:planId IS NULL AND ws.plan_id IS NULL AND ws.name_snapshot = :name))
+                        GROUP BY ws.id, ws.total_volume_kg, ws.duration_minutes, ws.ended_at
+                        ORDER BY ws.ended_at DESC
+                        LIMIT 1
+                        """)
+                .param("userId", userId, Types.BIGINT)
+                .param("planId", request.planId(), Types.BIGINT)
+                .param("name", request.name().trim())
+                .query(PreviousWorkout.class)
+                .optional()
+                .orElse(null);
+        if (previous == null) return null;
+        int completedSetCount = request.exercises().stream()
+                .mapToInt(exercise -> (int) exercise.sets().stream().filter(set -> Boolean.TRUE.equals(set.completed())).count())
+                .sum();
+        BigDecimal volumeDifference = totalVolume.subtract(previous.totalVolumeKg());
+        BigDecimal volumePercent = previous.totalVolumeKg().compareTo(BigDecimal.ZERO) > 0
+                ? volumeDifference.multiply(BigDecimal.valueOf(100))
+                        .divide(previous.totalVolumeKg(), 2, RoundingMode.HALF_UP)
+                : null;
+        return new WorkoutComparison(roundMetric(previous.totalVolumeKg()), previous.completedSetCount(),
+                previous.durationMinutes(), roundMetric(volumeDifference), volumePercent,
+                completedSetCount - previous.completedSetCount(), request.durationMinutes() - previous.durationMinutes());
+    }
+
+    List<ExercisePerformanceSummary> evaluateExercisePerformance(Long userId, List<WorkoutExerciseRequest> exercises) {
+        List<Long> exerciseIds = exercises.stream().map(WorkoutExerciseRequest::exerciseId).distinct().toList();
+        Map<Long, HistoricalExerciseMetricRow> baselines = loadHistoricalExerciseMetrics(userId, exerciseIds).stream()
+                .collect(Collectors.toMap(HistoricalExerciseMetricRow::exerciseId, item -> item));
+        Map<Long, Map<BigDecimal, Integer>> repetitionsByWeight = new LinkedHashMap<>();
+        loadHistoricalWeightRepetitions(userId, exerciseIds).forEach(item -> repetitionsByWeight
+                .computeIfAbsent(item.exerciseId(), ignored -> new LinkedHashMap<>())
+                .put(normalizeWeight(item.weightKg()), item.maxRepetitions()));
+
+        List<ExercisePerformanceSummary> summaries = new ArrayList<>();
+        for (WorkoutExerciseRequest exercise : exercises) {
+            List<WorkoutSetRequest> completedSets = exercise.sets().stream()
+                    .filter(set -> Boolean.TRUE.equals(set.completed()))
+                    .toList();
+            CurrentExerciseMetrics current = currentMetrics(completedSets);
+            HistoricalExerciseMetricRow previous = baselines.get(exercise.exerciseId());
+            Map<BigDecimal, Integer> previousWeightRepetitions = repetitionsByWeight
+                    .getOrDefault(exercise.exerciseId(), Map.of());
+            List<ExerciseAchievement> achievements = previous == null
+                    ? List.of()
+                    : buildAchievements(exercise, current, previous, previousWeightRepetitions);
+            PersonalBestSnapshot personalBest = personalBest(current, previous, previousWeightRepetitions);
+            summaries.add(new ExercisePerformanceSummary(
+                    exercise.exerciseId(), exercise.name(), completedSets.size(), current.totalRepetitions(),
+                    current.totalVolumeKg(), current.maxWeightKg(), current.estimatedOneRepMaxKg(),
+                    previous == null, achievements, personalBest));
+        }
+        return summaries;
+    }
+
+    private List<HistoricalExerciseMetricRow> loadHistoricalExerciseMetrics(Long userId, List<Long> exerciseIds) {
+        if (exerciseIds.isEmpty()) return List.of();
+        return jdbcClient.sql("""
+                        WITH exercise_session_metrics AS (
+                            SELECT se.exercise_id AS exerciseId, se.session_id,
+                                   SUM(sr.weight_kg * sr.repetitions) AS totalVolumeKg,
+                                   SUM(sr.repetitions) AS totalRepetitions
+                            FROM session_exercise se
+                            JOIN workout_session ws ON ws.id = se.session_id
+                            JOIN set_record sr ON sr.session_exercise_id = se.id AND sr.status = 'COMPLETED'
+                            WHERE ws.status = 'COMPLETED'
+                              AND ((:userId IS NULL AND ws.owner_user_id IS NULL) OR ws.owner_user_id = :userId)
+                              AND se.exercise_id IN (:exerciseIds)
+                            GROUP BY se.exercise_id, se.session_id
+                        )
+                        SELECT se.exercise_id AS exerciseId,
+                               MAX(sr.weight_kg) AS maxWeightKg,
+                               MAX(sr.weight_kg * (1 + sr.repetitions / 30.0)) AS estimatedOneRepMaxKg,
+                               MAX(sr.weight_kg * sr.repetitions) AS maxSetVolumeKg,
+                               MAX(metrics.totalVolumeKg) AS maxExerciseVolumeKg,
+                               MAX(metrics.totalRepetitions) AS maxExerciseRepetitions
+                        FROM session_exercise se
+                        JOIN workout_session ws ON ws.id = se.session_id
+                        JOIN set_record sr ON sr.session_exercise_id = se.id AND sr.status = 'COMPLETED'
+                        JOIN exercise_session_metrics metrics
+                          ON metrics.exerciseId = se.exercise_id AND metrics.session_id = se.session_id
+                        WHERE ws.status = 'COMPLETED'
+                          AND ((:userId IS NULL AND ws.owner_user_id IS NULL) OR ws.owner_user_id = :userId)
+                          AND se.exercise_id IN (:exerciseIds)
+                        GROUP BY se.exercise_id
+                        """)
+                .param("userId", userId, Types.BIGINT)
+                .param("exerciseIds", exerciseIds)
+                .query(HistoricalExerciseMetricRow.class)
+                .list();
+    }
+
+    private List<HistoricalWeightRepetitionRow> loadHistoricalWeightRepetitions(Long userId, List<Long> exerciseIds) {
+        if (exerciseIds.isEmpty()) return List.of();
+        return jdbcClient.sql("""
+                        SELECT se.exercise_id AS exerciseId, sr.weight_kg AS weightKg,
+                               MAX(sr.repetitions) AS maxRepetitions
+                        FROM session_exercise se
+                        JOIN workout_session ws ON ws.id = se.session_id
+                        JOIN set_record sr ON sr.session_exercise_id = se.id
+                        WHERE ws.status = 'COMPLETED' AND sr.status = 'COMPLETED'
+                          AND ((:userId IS NULL AND ws.owner_user_id IS NULL) OR ws.owner_user_id = :userId)
+                          AND se.exercise_id IN (:exerciseIds)
+                        GROUP BY se.exercise_id, sr.weight_kg
+                        """)
+                .param("userId", userId, Types.BIGINT)
+                .param("exerciseIds", exerciseIds)
+                .query(HistoricalWeightRepetitionRow.class)
+                .list();
+    }
+
+    private CurrentExerciseMetrics currentMetrics(List<WorkoutSetRequest> sets) {
+        BigDecimal totalVolume = BigDecimal.ZERO;
+        BigDecimal maxWeight = BigDecimal.ZERO;
+        BigDecimal maxSetVolume = BigDecimal.ZERO;
+        BigDecimal maxEstimatedOneRepMax = BigDecimal.ZERO;
+        int totalRepetitions = 0;
+        Map<BigDecimal, Integer> repetitionsByWeight = new LinkedHashMap<>();
+        for (WorkoutSetRequest set : sets) {
+            BigDecimal weight = normalizeWeight(set.weightKg());
+            BigDecimal setVolume = weight.multiply(BigDecimal.valueOf(set.repetitions()));
+            BigDecimal estimatedOneRepMax = estimatedOneRepMax(weight, set.repetitions());
+            totalVolume = totalVolume.add(setVolume);
+            totalRepetitions += set.repetitions();
+            maxWeight = maxWeight.max(weight);
+            maxSetVolume = maxSetVolume.max(setVolume);
+            maxEstimatedOneRepMax = maxEstimatedOneRepMax.max(estimatedOneRepMax);
+            repetitionsByWeight.merge(weight, set.repetitions(), Math::max);
+        }
+        return new CurrentExerciseMetrics(totalVolume, totalRepetitions, maxWeight, maxSetVolume,
+                maxEstimatedOneRepMax, repetitionsByWeight);
+    }
+
+    private List<ExerciseAchievement> buildAchievements(WorkoutExerciseRequest exercise, CurrentExerciseMetrics current,
+            HistoricalExerciseMetricRow previous, Map<BigDecimal, Integer> previousRepetitionsByWeight) {
+        List<ExerciseAchievement> achievements = new ArrayList<>();
+        addAchievement(achievements, "MAX_WEIGHT", "最大重量", current.maxWeightKg(), previous.maxWeightKg(), "kg", "");
+        addAchievement(achievements, "ESTIMATED_1RM", "估算 1RM", current.estimatedOneRepMaxKg(),
+                previous.estimatedOneRepMaxKg(), "kg", "综合重量与次数估算");
+        addAchievement(achievements, "MAX_SET_VOLUME", "单组最大容量", current.maxSetVolumeKg(),
+                previous.maxSetVolumeKg(), "kg", "单组重量 × 次数");
+        addAchievement(achievements, "EXERCISE_VOLUME", "动作最大容量", current.totalVolumeKg(),
+                previous.maxExerciseVolumeKg(), "kg", "本次该动作全部完成组");
+        addAchievement(achievements, "EXERCISE_REPS", "动作最多次数", BigDecimal.valueOf(current.totalRepetitions()),
+                BigDecimal.valueOf(previous.maxExerciseRepetitions()), "次", "本次该动作累计次数");
+
+        WeightRepImprovement bestWeightRep = current.repetitionsByWeight().entrySet().stream()
+                .filter(entry -> previousRepetitionsByWeight.containsKey(entry.getKey()))
+                .filter(entry -> entry.getValue() > previousRepetitionsByWeight.get(entry.getKey()))
+                .map(entry -> new WeightRepImprovement(entry.getKey(), entry.getValue(),
+                        previousRepetitionsByWeight.get(entry.getKey())))
+                .max((left, right) -> Integer.compare(left.currentRepetitions() - left.previousRepetitions(),
+                        right.currentRepetitions() - right.previousRepetitions()))
+                .orElse(null);
+        if (bestWeightRep != null) {
+            achievements.add(new ExerciseAchievement("SAME_WEIGHT_REPS", "同重量最多次数",
+                    BigDecimal.valueOf(bestWeightRep.currentRepetitions()),
+                    BigDecimal.valueOf(bestWeightRep.previousRepetitions()), "次",
+                    formatMetric(bestWeightRep.weightKg()) + "kg 下完成"));
+        }
+        return achievements;
+    }
+
+    private PersonalBestSnapshot personalBest(CurrentExerciseMetrics current, HistoricalExerciseMetricRow previous,
+            Map<BigDecimal, Integer> previousRepetitionsByWeight) {
+        Map<String, Integer> mergedRepetitions = new LinkedHashMap<>();
+        previousRepetitionsByWeight.forEach((weight, repetitions) -> mergedRepetitions.put(formatMetric(weight), repetitions));
+        current.repetitionsByWeight().forEach((weight, repetitions) ->
+                mergedRepetitions.merge(formatMetric(weight), repetitions, Math::max));
+        return new PersonalBestSnapshot(
+                previous == null ? current.maxWeightKg() : current.maxWeightKg().max(previous.maxWeightKg()),
+                previous == null ? current.estimatedOneRepMaxKg()
+                        : current.estimatedOneRepMaxKg().max(previous.estimatedOneRepMaxKg()),
+                previous == null ? current.maxSetVolumeKg() : current.maxSetVolumeKg().max(previous.maxSetVolumeKg()),
+                previous == null ? current.totalVolumeKg() : current.totalVolumeKg().max(previous.maxExerciseVolumeKg()),
+                previous == null ? current.totalRepetitions()
+                        : Math.max(current.totalRepetitions(), previous.maxExerciseRepetitions()),
+                mergedRepetitions);
+    }
+
+    private void addAchievement(List<ExerciseAchievement> achievements, String type, String label,
+            BigDecimal current, BigDecimal previous, String unit, String detail) {
+        BigDecimal safePrevious = previous == null ? BigDecimal.ZERO : previous;
+        if (current != null && current.compareTo(safePrevious) > 0) {
+            achievements.add(new ExerciseAchievement(type, label, roundMetric(current), roundMetric(safePrevious), unit, detail));
+        }
+    }
+
+    private BigDecimal estimatedOneRepMax(BigDecimal weight, int repetitions) {
+        return roundMetric(weight.multiply(BigDecimal.ONE.add(BigDecimal.valueOf(repetitions)
+                .divide(BigDecimal.valueOf(30), 6, RoundingMode.HALF_UP))));
+    }
+
+    private BigDecimal normalizeWeight(BigDecimal value) {
+        return (value == null ? BigDecimal.ZERO : value).stripTrailingZeros();
+    }
+
+    private BigDecimal roundMetric(BigDecimal value) {
+        return value.setScale(2, RoundingMode.HALF_UP).stripTrailingZeros();
+    }
+
+    private String formatMetric(BigDecimal value) {
+        return roundMetric(value).toPlainString();
     }
 
     private void validatePlanAccess(Long userId, Long planId) {
@@ -336,6 +561,54 @@ public class WorkoutService {
             @NotNull Boolean completed) {
     }
 
-    public record WorkoutCompletionResponse(Long id, BigDecimal totalVolumeKg) {
+    private record ExistingWorkout(Long id, BigDecimal totalVolumeKg) {
+    }
+
+    private record PreviousWorkout(BigDecimal totalVolumeKg, Integer durationMinutes, Integer completedSetCount) {
+    }
+
+    record HistoricalExerciseMetricRow(Long exerciseId, BigDecimal maxWeightKg,
+            BigDecimal estimatedOneRepMaxKg, BigDecimal maxSetVolumeKg, BigDecimal maxExerciseVolumeKg,
+            Integer maxExerciseRepetitions) {
+    }
+
+    record HistoricalWeightRepetitionRow(Long exerciseId, BigDecimal weightKg, Integer maxRepetitions) {
+    }
+
+    private record CurrentExerciseMetrics(BigDecimal totalVolumeKg, Integer totalRepetitions,
+            BigDecimal maxWeightKg, BigDecimal maxSetVolumeKg, BigDecimal estimatedOneRepMaxKg,
+            Map<BigDecimal, Integer> repetitionsByWeight) {
+    }
+
+    private record WeightRepImprovement(BigDecimal weightKg, Integer currentRepetitions,
+            Integer previousRepetitions) {
+    }
+
+    public record ExercisePerformanceSummary(Long exerciseId, String exerciseName, Integer completedSetCount,
+            Integer totalRepetitions, BigDecimal totalVolumeKg, BigDecimal maxWeightKg,
+            BigDecimal estimatedOneRepMaxKg, Boolean firstRecorded, List<ExerciseAchievement> achievements,
+            PersonalBestSnapshot personalBest) {
+    }
+
+    public record PersonalBestSnapshot(BigDecimal maxWeightKg, BigDecimal estimatedOneRepMaxKg,
+            BigDecimal maxSetVolumeKg, BigDecimal maxExerciseVolumeKg, Integer maxExerciseRepetitions,
+            Map<String, Integer> repetitionsByWeight) {
+    }
+
+    public record ExerciseAchievement(String type, String label, BigDecimal value, BigDecimal previousValue,
+            String unit, String detail) {
+    }
+
+    public record WorkoutComparison(BigDecimal previousVolumeKg, Integer previousSetCount,
+            Integer previousDurationMinutes, BigDecimal volumeDifferenceKg, BigDecimal volumeChangePercent,
+            Integer setDifference, Integer durationDifferenceMinutes) {
+    }
+
+    public record WorkoutCompletionResponse(Long id, BigDecimal totalVolumeKg,
+            List<ExercisePerformanceSummary> exerciseSummaries, WorkoutComparison comparison) {
+
+        public WorkoutCompletionResponse(Long id, BigDecimal totalVolumeKg) {
+            this(id, totalVolumeKg, List.of(), null);
+        }
     }
 }
