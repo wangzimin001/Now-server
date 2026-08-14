@@ -7,6 +7,7 @@ import com.wangzimin.now.service.FitnessQueryService.DashboardResponse;
 import com.wangzimin.now.service.FitnessQueryService.ExerciseCategory;
 import com.wangzimin.now.service.FitnessQueryService.ExercisePageResponse;
 import com.wangzimin.now.service.FitnessQueryService.WorkoutHistoryItem;
+import com.wangzimin.now.service.FitnessQueryService.WorkoutHistoryDetail;
 import com.wangzimin.now.service.FitnessQueryService.WorkoutPlanResponse;
 import com.wangzimin.now.service.WorkoutService;
 import com.wangzimin.now.service.WorkoutService.WorkoutCompletionRequest;
@@ -73,10 +74,25 @@ public class FitnessController {
     @GetMapping("/exercises")
     public ExercisePageResponse exercises(
             @RequestParam(required = false) String category,
+            @RequestParam(required = false) String chestRegion,
+            @RequestParam(required = false) String backRegion,
+            @RequestParam(required = false) String shoulderRegion,
+            @RequestParam(required = false) String thighRegion,
+            @RequestParam(required = false) String waistRegion,
+            @RequestParam(required = false) String upperArmRegion,
+            @RequestParam(required = false) String calfRegion,
+            @RequestParam(required = false) String forearmRegion,
             @RequestParam(required = false) String keyword,
             @RequestParam(defaultValue = "1") Integer page,
             @RequestParam(defaultValue = "20") Integer limit) {
-        return fitnessQueryService.exercises(category, keyword, page, limit);
+        return fitnessQueryService.exercises(category, chestRegion, backRegion, shoulderRegion, thighRegion,
+                waistRegion, upperArmRegion, calfRegion, forearmRegion, keyword, page, limit);
+    }
+
+    // 保留旧的直接调用签名，兼容现有单元测试和仓库内调用；HTTP 仍只暴露上面的完整参数入口。
+    ExercisePageResponse exercises(String category, String chestRegion, String backRegion,
+            String keyword, Integer page, Integer limit) {
+        return fitnessQueryService.exercises(category, chestRegion, backRegion, keyword, page, limit);
     }
 
     @GetMapping("/exercise-categories")
@@ -87,6 +103,11 @@ public class FitnessController {
     @GetMapping("/workouts/history")
     public List<WorkoutHistoryItem> history() {
         return fitnessQueryService.history();
+    }
+
+    @GetMapping("/workouts/history/{sessionId}")
+    public WorkoutHistoryDetail historyDetail(@PathVariable Long sessionId) {
+        return fitnessQueryService.historyDetail(sessionId);
     }
 
     @PostMapping("/workouts")

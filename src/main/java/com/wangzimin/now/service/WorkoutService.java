@@ -37,13 +37,12 @@ public class WorkoutService {
         KeyHolder keyHolder = new GeneratedKeyHolder();
         jdbcClient.sql("""
                         INSERT INTO workout_plan
-                            (name, description, estimated_minutes, level, weekly_target, is_active)
-                        VALUES (:name, :description, :estimatedMinutes, :level, 3, TRUE)
+                            (name, description, estimated_minutes, weekly_target, is_active)
+                        VALUES (:name, :description, :estimatedMinutes, 3, TRUE)
                         """)
                 .param("name", request.name().trim())
                 .param("description", cleanDescription(request.description()))
                 .param("estimatedMinutes", request.estimatedMinutes())
-                .param("level", request.level().trim())
                 .update(keyHolder, "id");
 
         Number key = keyHolder.getKey();
@@ -62,14 +61,12 @@ public class WorkoutService {
                         SET name = :name,
                             description = :description,
                             estimated_minutes = :estimatedMinutes,
-                            level = :level,
                             is_active = TRUE
                         WHERE id = :planId AND is_active = TRUE
                         """)
                 .param("name", request.name().trim())
                 .param("description", cleanDescription(request.description()))
                 .param("estimatedMinutes", request.estimatedMinutes())
-                .param("level", request.level().trim())
                 .param("planId", planId)
                 .update();
         requirePlan(changed);
@@ -176,17 +173,20 @@ public class WorkoutService {
         for (int index = 0; index < sets.size(); index++) {
             WorkoutSetRequest set = sets.get(index);
             boolean completed = Boolean.TRUE.equals(set.completed());
+            // 每组独立保存实际组间歇；未确认或未完成的组允许为空，不能伪造成零秒。
+            // 该字段与重量、次数处于同一事务中，训练保存失败时会整体回滚。
             jdbcClient.sql("""
                             INSERT INTO set_record
-                                (session_exercise_id, set_number, weight_kg, repetitions, status, completed_at)
+                                (session_exercise_id, set_number, weight_kg, repetitions, rest_duration_seconds, status, completed_at)
                             VALUES
-                                (:sessionExerciseId, :setNumber, :weightKg, :repetitions, :status,
+                                (:sessionExerciseId, :setNumber, :weightKg, :repetitions, :restDurationSeconds, :status,
                                  CASE WHEN :status = 'COMPLETED' THEN :endedAt ELSE NULL END)
                             """)
                     .param("sessionExerciseId", sessionExerciseId)
                     .param("setNumber", index + 1)
                     .param("weightKg", set.weightKg())
                     .param("repetitions", set.repetitions())
+                    .param("restDurationSeconds", set.restDurationSeconds(), Types.INTEGER)
                     .param("status", completed ? "COMPLETED" : "SKIPPED")
                     .param("endedAt", Timestamp.from(endedAt))
                     .update();
@@ -207,7 +207,6 @@ public class WorkoutService {
             @NotBlank @Size(max = 80) String name,
             @Size(max = 500) String description,
             @NotNull @Min(1) @Max(600) Integer estimatedMinutes,
-            @NotBlank @Size(max = 20) String level,
             @NotNull @Size(min = 1, max = 50) List<@Valid PlanExerciseRequest> exercises) {
     }
 
@@ -234,9 +233,12 @@ public class WorkoutService {
     }
 
     public record WorkoutSetRequest(
+            // number 由客户端表达顺序，服务端落库时仍按列表位置生成连续组号。
             @NotNull @Positive Integer number,
             @NotNull @DecimalMin("0.0") BigDecimal weightKg,
             @NotNull @Min(0) @Max(999) Integer repetitions,
+            // 正向计时可超过模板预设，因此上限按最长训练会话的一天设置。
+            @Min(0) @Max(86400) Integer restDurationSeconds,
             @NotNull Boolean completed) {
     }
 

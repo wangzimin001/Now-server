@@ -10,15 +10,43 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.List;
 
 import com.wangzimin.now.service.FitnessQueryService.PlanExercise;
+import com.wangzimin.now.service.FitnessQueryService.WorkoutHistoryItem;
 import com.wangzimin.now.service.FitnessQueryService.WorkoutPlanResponse;
 import org.junit.jupiter.api.Test;
 import org.springframework.jdbc.core.simple.JdbcClient;
 
 class FitnessQueryServiceTest {
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void historyCountsDistinctExercisesAndCompletedSets() {
+        JdbcClient jdbcClient = mock(JdbcClient.class);
+        JdbcClient.StatementSpec statement = mock(JdbcClient.StatementSpec.class);
+        JdbcClient.MappedQuerySpec<WorkoutHistoryItem> query = mock(JdbcClient.MappedQuerySpec.class);
+        LocalDateTime completedAt = LocalDateTime.of(2026, 8, 14, 10, 30);
+        WorkoutHistoryItem expected = new WorkoutHistoryItem(
+                1L, "上肢力量", completedAt, 45, 5, 16, BigDecimal.valueOf(2400));
+
+        when(jdbcClient.sql(anyString())).thenReturn(statement);
+        when(statement.query(WorkoutHistoryItem.class)).thenReturn(query);
+        when(query.list()).thenReturn(List.of(expected));
+
+        List<WorkoutHistoryItem> history = new FitnessQueryService(jdbcClient).history();
+
+        assertEquals(16, history.get(0).completedSetCount());
+        var sqlCaptor = org.mockito.ArgumentCaptor.forClass(String.class);
+        verify(jdbcClient).sql(sqlCaptor.capture());
+        String historySql = sqlCaptor.getValue();
+        assertTrue(historySql.contains("COUNT(DISTINCT se.id) AS exerciseCount"));
+        assertTrue(historySql.contains("sr.status = 'COMPLETED'"));
+        assertTrue(historySql.contains("LEFT JOIN set_record sr"));
+        assertTrue(historySql.contains("LIMIT 200"));
+    }
 
     @Test
     @SuppressWarnings("unchecked")
@@ -34,8 +62,8 @@ class FitnessQueryServiceTest {
         when(planStatement.query(FitnessQueryService.WorkoutPlanRow.class)).thenReturn(planQuery);
         when(exerciseStatement.query(PlanExercise.class)).thenReturn(exerciseQuery);
         when(planQuery.list()).thenReturn(List.of(
-                new FitnessQueryService.WorkoutPlanRow(1L, "Used", "desc", 45, "基础", 2L, lastUsedAt),
-                new FitnessQueryService.WorkoutPlanRow(2L, "Unused", "desc", 30, "入门", 0L, null)));
+                new FitnessQueryService.WorkoutPlanRow(1L, "Used", "desc", 45, 2L, lastUsedAt),
+                new FitnessQueryService.WorkoutPlanRow(2L, "Unused", "desc", 30, 0L, null)));
         when(exerciseQuery.list()).thenReturn(List.of(
                 new PlanExercise(1L, 10L, "深蹲", "腿部", 3, 10, 90,
                         "/static/exercises/gifs/squat.gif")));

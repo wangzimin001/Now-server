@@ -53,7 +53,7 @@ public class FitnessQueryService {
 
         WorkoutHistoryItem recentWorkout = history().stream()
                 .findFirst()
-                .orElse(new WorkoutHistoryItem(0L, "暂无训练", LocalDateTime.now(), 0, 0, BigDecimal.ZERO));
+                .orElse(new WorkoutHistoryItem(0L, "暂无训练", LocalDateTime.now(), 0, 0, 0, BigDecimal.ZERO));
 
         return new DashboardResponse(
                 new TodayPlan(plan.id(), plan.name(), plan.exerciseCount(), plan.estimatedMinutes(), 0),
@@ -68,7 +68,7 @@ public class FitnessQueryService {
     public List<WorkoutPlanResponse> workoutPlans() {
         List<WorkoutPlanRow> plans = jdbcClient.sql("""
                         SELECT wp.id, wp.name, wp.description,
-                               wp.estimated_minutes AS estimatedMinutes, wp.level,
+                               wp.estimated_minutes AS estimatedMinutes,
                                COALESCE(plan_usage.usage_count, 0) AS usageCount,
                                plan_usage.last_used_at AS lastUsedAt
                         FROM workout_plan wp
@@ -118,7 +118,6 @@ public class FitnessQueryService {
                         plan.name(),
                         plan.description(),
                         plan.estimatedMinutes(),
-                        plan.level(),
                         plan.usageCount(),
                         plan.lastUsedAt(),
                         exercisesByPlan.getOrDefault(plan.id(), List.of())))
@@ -132,17 +131,46 @@ public class FitnessQueryService {
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "训练模板不存在"));
     }
 
-    public ExercisePageResponse exercises(String category, String keyword, Integer page, Integer limit) {
+    public ExercisePageResponse exercises(String category, String chestRegion, String backRegion,
+            String shoulderRegion, String thighRegion, String waistRegion, String upperArmRegion,
+            String calfRegion, String forearmRegion, String keyword,
+            Integer page, Integer limit) {
         int safePage = page == null ? 1 : Math.max(page, 1);
         int safeLimit = limit == null ? 20 : Math.min(Math.max(limit, 1), 50);
         int offset = (safePage - 1) * safeLimit;
         String categoryFilter = category == null ? "" : category.trim();
+        // 二级分类只对胸部生效；其他一级分类即使收到残留参数也不得被意外筛空。
+        String chestRegionFilter = "chest".equals(categoryFilter) && chestRegion != null ? chestRegion.trim() : "";
+        String backRegionFilter = "back".equals(categoryFilter) && backRegion != null ? backRegion.trim() : "";
+        // 肩部二级条件只在肩部一级分类下生效，避免页面切换后残留条件误筛其他分类。
+        String shoulderRegionFilter = "shoulders".equals(categoryFilter) && shoulderRegion != null
+                ? shoulderRegion.trim() : "";
+        // 大腿筛选只作用于 upper legs，确保切换一级分类时残留参数不会影响其他动作。
+        String thighRegionFilter = "upper legs".equals(categoryFilter) && thighRegion != null
+                ? thighRegion.trim() : "";
+        // 腰腹二级条件只在 waist 下生效，避免隐藏筛选条件泄漏到其他一级分类。
+        String waistRegionFilter = "waist".equals(categoryFilter) && waistRegion != null
+                ? waistRegion.trim() : "";
+        // 上臂二级条件只在 upper arms 分类下生效。
+        String upperArmRegionFilter = "upper arms".equals(categoryFilter) && upperArmRegion != null
+                ? upperArmRegion.trim() : "";
+        String calfRegionFilter = "lower legs".equals(categoryFilter) && calfRegion != null ? calfRegion.trim() : "";
+        String forearmRegionFilter = "lower arms".equals(categoryFilter) && forearmRegion != null
+                ? forearmRegion.trim() : "";
         String keywordFilter = keyword == null ? "" : keyword.trim();
 
         String whereSql = """
                 FROM exercise
                 WHERE source = 'exercise-dataset'
                   AND (:category = '' OR category_code = :category)
+                  AND (:chestRegion = '' OR JSON_CONTAINS(chest_regions, JSON_QUOTE(:chestRegion)))
+                  AND (:backRegion = '' OR JSON_CONTAINS(back_regions, JSON_QUOTE(:backRegion)))
+                  AND (:shoulderRegion = '' OR JSON_CONTAINS(shoulder_regions, JSON_QUOTE(:shoulderRegion)))
+                  AND (:thighRegion = '' OR JSON_CONTAINS(thigh_regions, JSON_QUOTE(:thighRegion)))
+                  AND (:waistRegion = '' OR JSON_CONTAINS(waist_regions, JSON_QUOTE(:waistRegion)))
+                  AND (:upperArmRegion = '' OR JSON_CONTAINS(upper_arm_regions, JSON_QUOTE(:upperArmRegion)))
+                  AND (:calfRegion = '' OR JSON_CONTAINS(calf_regions, JSON_QUOTE(:calfRegion)))
+                  AND (:forearmRegion = '' OR JSON_CONTAINS(forearm_regions, JSON_QUOTE(:forearmRegion)))
                   AND (
                     :keyword = ''
                     OR name LIKE CONCAT('%', :keyword, '%')
@@ -154,6 +182,14 @@ public class FitnessQueryService {
 
         long total = jdbcClient.sql("SELECT COUNT(*) " + whereSql)
                 .param("category", categoryFilter)
+                .param("chestRegion", chestRegionFilter)
+                .param("backRegion", backRegionFilter)
+                .param("shoulderRegion", shoulderRegionFilter)
+                .param("thighRegion", thighRegionFilter)
+                .param("waistRegion", waistRegionFilter)
+                .param("upperArmRegion", upperArmRegionFilter)
+                .param("calfRegion", calfRegionFilter)
+                .param("forearmRegion", forearmRegionFilter)
                 .param("keyword", keywordFilter)
                 .query(Long.class)
                 .single();
@@ -161,6 +197,14 @@ public class FitnessQueryService {
         List<ExerciseResponse> data = jdbcClient.sql("""
                         SELECT id, source_exercise_id AS sourceExerciseId, name, name_en AS nameEn,
                                category_code AS categoryCode, category_name AS categoryName,
+                               chest_regions AS chestRegions,
+                               back_regions AS backRegions,
+                               shoulder_regions AS shoulderRegions,
+                               thigh_regions AS thighRegions,
+                               waist_regions AS waistRegions,
+                               upper_arm_regions AS upperArmRegions,
+                               calf_regions AS calfRegions,
+                               forearm_regions AS forearmRegions,
                                muscle_group AS muscleGroup, equipment, target_name AS targetName,
                                instructions, gif_url AS gifUrl, attribution
                         """ + whereSql + """
@@ -168,14 +212,120 @@ public class FitnessQueryService {
                         LIMIT :limit OFFSET :offset
                         """)
                 .param("category", categoryFilter)
+                .param("chestRegion", chestRegionFilter)
+                .param("backRegion", backRegionFilter)
+                .param("shoulderRegion", shoulderRegionFilter)
+                .param("thighRegion", thighRegionFilter)
+                .param("waistRegion", waistRegionFilter)
+                .param("upperArmRegion", upperArmRegionFilter)
+                .param("calfRegion", calfRegionFilter)
+                .param("forearmRegion", forearmRegionFilter)
                 .param("keyword", keywordFilter)
                 .param("limit", safeLimit)
                 .param("offset", offset)
-                .query(ExerciseResponse.class)
+                .query((resultSet, rowNumber) -> new ExerciseResponse(
+                        resultSet.getLong("id"),
+                        resultSet.getString("sourceExerciseId"),
+                        resultSet.getString("name"),
+                        resultSet.getString("nameEn"),
+                        resultSet.getString("categoryCode"),
+                        resultSet.getString("categoryName"),
+                        parseChestRegions(resultSet.getString("chestRegions")),
+                        parseBackRegions(resultSet.getString("backRegions")),
+                        parseShoulderRegions(resultSet.getString("shoulderRegions")),
+                        parseThighRegions(resultSet.getString("thighRegions")),
+                        parseWaistRegions(resultSet.getString("waistRegions")),
+                        parseUpperArmRegions(resultSet.getString("upperArmRegions")),
+                        parseCalfRegions(resultSet.getString("calfRegions")),
+                        parseForearmRegions(resultSet.getString("forearmRegions")),
+                        resultSet.getString("muscleGroup"),
+                        resultSet.getString("equipment"),
+                        resultSet.getString("targetName"),
+                        resultSet.getString("instructions"),
+                        resultSet.getString("gifUrl"),
+                        resultSet.getString("attribution")))
                 .list();
 
         int totalPages = total == 0 ? 0 : (int) Math.ceil((double) total / safeLimit);
         return new ExercisePageResponse(data, total, safePage, safeLimit, totalPages);
+    }
+
+    // 旧调用默认没有肩束条件，避免既有调用方因新增可选筛选参数而中断。
+    public ExercisePageResponse exercises(String category, String chestRegion, String backRegion, String keyword,
+            Integer page, Integer limit) {
+        return exercises(category, chestRegion, backRegion, null, null, null, null, null, null, keyword, page, limit);
+    }
+
+    private static List<String> parseChestRegions(String json) {
+        // 数据库只允许三个固定中文值；轻量解析避免把 JDBC JSON 驱动类型暴露到 API。
+        if (json == null || json.isBlank()) {
+            return List.of();
+        }
+        return List.of("上胸", "中胸", "下胸").stream()
+                .filter(region -> json.contains('"' + region + '"'))
+                .toList();
+    }
+
+    private static List<String> parseBackRegions(String json) {
+        // 返回顺序与前端页签一致，双标签动作在不同筛选中仍保持单条数据。
+        if (json == null || json.isBlank()) {
+            return List.of();
+        }
+        return List.of("背阔肌", "上背部", "斜方肌", "下背部").stream()
+                .filter(region -> json.contains('"' + region + '"'))
+                .toList();
+    }
+
+    private static List<String> parseShoulderRegions(String json) {
+        // 固定输出前中后束顺序，双标签动作在不同筛选页签中均只返回一条记录。
+        if (json == null || json.isBlank()) {
+            return List.of();
+        }
+        return List.of("前束", "中束", "后束").stream()
+                .filter(region -> json.contains('"' + region + '"'))
+                .toList();
+    }
+
+    private static List<String> parseThighRegions(String json) {
+        // 顺序与前端页签一致，双标签动作仍由一条动作记录表达。
+        if (json == null || json.isBlank()) {
+            return List.of();
+        }
+        return List.of("股四头肌", "腘绳肌", "臀肌", "内收肌", "外展肌").stream()
+                .filter(region -> json.contains('"' + region + '"'))
+                .toList();
+    }
+
+    private static List<String> parseWaistRegions(String json) {
+        // 上腹、下腹是训练侧重；固定顺序便于前端稳定展示多标签。
+        if (json == null || json.isBlank()) {
+            return List.of();
+        }
+        return List.of("上腹", "下腹", "腹斜肌", "核心稳定", "下背部").stream()
+                .filter(region -> json.contains('"' + region + '"'))
+                .toList();
+    }
+
+    private static List<String> parseUpperArmRegions(String json) {
+        // 二头内外侧是长短头侧重标签，按页签顺序稳定输出。
+        if (json == null || json.isBlank()) {
+            return List.of();
+        }
+        return List.of("二头内侧", "二头外侧", "三头").stream()
+                .filter(region -> json.contains('"' + region + '"'))
+                .toList();
+    }
+
+    private static List<String> parseCalfRegions(String json) {
+        if (json == null || json.isBlank()) return List.of();
+        return List.of("腓肠肌", "比目鱼肌", "胫骨前肌", "踝部稳定").stream()
+                .filter(region -> json.contains('"' + region + '"')).toList();
+    }
+
+    private static List<String> parseForearmRegions(String json) {
+        if (json == null || json.isBlank()) return List.of();
+        return List.of("腕屈肌", "腕伸肌", "旋前旋后", "握力").stream()
+                .filter(region -> json.contains('"' + region + '"')).toList();
     }
 
     public List<ExerciseCategory> exerciseCategories() {
@@ -194,17 +344,75 @@ public class FitnessQueryService {
         return jdbcClient.sql("""
                         SELECT ws.id, ws.name_snapshot AS name, ws.ended_at AS completedAt,
                                ws.duration_minutes AS durationMinutes,
-                               COUNT(se.id) AS exerciseCount,
+                               COUNT(DISTINCT se.id) AS exerciseCount,
+                               SUM(CASE WHEN sr.status = 'COMPLETED' THEN 1 ELSE 0 END) AS completedSetCount,
                                ws.total_volume_kg AS totalVolumeKg
                         FROM workout_session ws
                         LEFT JOIN session_exercise se ON se.session_id = ws.id
+                        LEFT JOIN set_record sr ON sr.session_exercise_id = se.id
                         WHERE ws.status = 'COMPLETED'
                         GROUP BY ws.id, ws.name_snapshot, ws.ended_at, ws.duration_minutes, ws.total_volume_kg
                         ORDER BY ws.ended_at DESC
-                        LIMIT 20
+                        LIMIT 200
                         """)
                 .query(WorkoutHistoryItem.class)
                 .list();
+    }
+
+    public WorkoutHistoryDetail historyDetail(Long sessionId) {
+        WorkoutHistoryDetailRow session = jdbcClient.sql("""
+                        SELECT id, name_snapshot AS name, ended_at AS completedAt,
+                               duration_minutes AS durationMinutes, total_volume_kg AS totalVolumeKg
+                        FROM workout_session
+                        WHERE id = :sessionId AND status = 'COMPLETED'
+                        """)
+                .param("sessionId", sessionId)
+                .query(WorkoutHistoryDetailRow.class)
+                .optional()
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "训练记录不存在"));
+
+        List<WorkoutHistoryExercise> exercises = jdbcClient.sql("""
+                        SELECT se.id, se.exercise_name_snapshot AS name, se.exercise_order AS exerciseOrder,
+                               sr.set_number AS setNumber, sr.weight_kg AS weightKg, sr.repetitions,
+                               sr.rest_duration_seconds AS restDurationSeconds, sr.status, sr.completed_at AS completedAt
+                        FROM session_exercise se
+                        LEFT JOIN set_record sr ON sr.session_exercise_id = se.id
+                        WHERE se.session_id = :sessionId
+                        ORDER BY se.exercise_order, sr.set_number
+                        """)
+                .param("sessionId", sessionId)
+                .query((resultSet, rowNumber) -> new HistorySetRow(
+                        resultSet.getLong("id"),
+                        resultSet.getString("name"),
+                        resultSet.getInt("exerciseOrder"),
+                        resultSet.getObject("setNumber", Integer.class),
+                        resultSet.getBigDecimal("weightKg"),
+                        resultSet.getObject("repetitions", Integer.class),
+                        resultSet.getObject("restDurationSeconds", Integer.class),
+                        resultSet.getString("status"),
+                        resultSet.getTimestamp("completedAt") == null ? null
+                                : resultSet.getTimestamp("completedAt").toLocalDateTime()))
+                .list()
+                .stream()
+                .collect(java.util.stream.Collectors.groupingBy(
+                        HistorySetRow::id,
+                        LinkedHashMap::new,
+                        java.util.stream.Collectors.toList()))
+                .values()
+                .stream()
+                .map(rows -> {
+                    HistorySetRow first = rows.get(0);
+                    List<WorkoutSetDetail> sets = rows.stream()
+                            .filter(row -> row.setNumber() != null)
+                            .map(row -> new WorkoutSetDetail(row.setNumber(), row.weightKg(), row.repetitions(),
+                                    row.restDurationSeconds(), row.status(), row.completedAt()))
+                            .toList();
+                    return new WorkoutHistoryExercise(first.id(), first.name(), first.exerciseOrder(), sets);
+                })
+                .toList();
+
+        return new WorkoutHistoryDetail(session.id(), session.name(), session.completedAt(), session.durationMinutes(),
+                session.totalVolumeKg(), exercises);
     }
 
     private List<WeekDay> buildWeekDays() {
@@ -223,7 +431,16 @@ public class FitnessQueryService {
             Integer exerciseCount) {
     }
 
-    record WorkoutPlanRow(Long id, String name, String description, Integer estimatedMinutes, String level,
+    private record WorkoutHistoryDetailRow(Long id, String name, LocalDateTime completedAt,
+            Integer durationMinutes, BigDecimal totalVolumeKg) {
+    }
+
+    private record HistorySetRow(Long id, String name, Integer exerciseOrder, Integer setNumber,
+            BigDecimal weightKg, Integer repetitions, Integer restDurationSeconds, String status,
+            LocalDateTime completedAt) {
+    }
+
+    record WorkoutPlanRow(Long id, String name, String description, Integer estimatedMinutes,
             Long usageCount, LocalDateTime lastUsedAt) {
     }
 
@@ -245,11 +462,11 @@ public class FitnessQueryService {
     }
 
     public record WorkoutPlanResponse(Long id, String name, String description, Integer estimatedMinutes,
-            String level, Long usageCount, LocalDateTime lastUsedAt, List<PlanExercise> exercises) {
+            Long usageCount, LocalDateTime lastUsedAt, List<PlanExercise> exercises) {
 
         public WorkoutPlanResponse(Long id, String name, String description, Integer estimatedMinutes,
-                String level, List<PlanExercise> exercises) {
-            this(id, name, description, estimatedMinutes, level, 0L, null, exercises);
+                List<PlanExercise> exercises) {
+            this(id, name, description, estimatedMinutes, 0L, null, exercises);
         }
     }
 
@@ -270,21 +487,46 @@ public class FitnessQueryService {
     }
 
     public record ExerciseResponse(Long id, String sourceExerciseId, String name, String nameEn,
-            String categoryCode, String categoryName, String muscleGroup, String equipment, String targetName,
+            String categoryCode, String categoryName, List<String> chestRegions, List<String> backRegions,
+            List<String> shoulderRegions, List<String> thighRegions, List<String> waistRegions,
+            List<String> upperArmRegions, List<String> calfRegions, List<String> forearmRegions,
+            String muscleGroup, String equipment, String targetName,
             String instructions, String gifUrl, String attribution) {
+
+        // 旧构造签名默认肩束为空，兼容不关心肩部标签的既有测试夹具。
+        public ExerciseResponse(Long id, String sourceExerciseId, String name, String nameEn,
+                String categoryCode, String categoryName, List<String> chestRegions, List<String> backRegions,
+                String muscleGroup, String equipment, String targetName,
+                String instructions, String gifUrl, String attribution) {
+            this(id, sourceExerciseId, name, nameEn, categoryCode, categoryName, chestRegions, backRegions,
+                    List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), muscleGroup, equipment, targetName, instructions, gifUrl,
+                    attribution);
+        }
     }
 
     public record WorkoutHistoryItem(Long id, String name, LocalDateTime completedAt, Integer durationMinutes,
-            Integer exerciseCount, BigDecimal totalVolumeKg) {
+            Integer exerciseCount, Integer completedSetCount, BigDecimal totalVolumeKg) {
 
         public FormattedWorkout withFormattedDate() {
             LocalDate date = completedAt.toLocalDate();
-            return new FormattedWorkout(id, name, completedAt, durationMinutes, exerciseCount, totalVolumeKg,
+            return new FormattedWorkout(id, name, completedAt, durationMinutes, exerciseCount, completedSetCount, totalVolumeKg,
                     DAY_FORMAT.format(date), MONTH_FORMAT.format(date));
         }
     }
 
+    public record WorkoutHistoryDetail(Long id, String name, LocalDateTime completedAt, Integer durationMinutes,
+            BigDecimal totalVolumeKg, List<WorkoutHistoryExercise> exercises) {
+    }
+
+    public record WorkoutHistoryExercise(Long id, String name, Integer exerciseOrder,
+            List<WorkoutSetDetail> sets) {
+    }
+
+    public record WorkoutSetDetail(Integer setNumber, BigDecimal weightKg, Integer repetitions,
+            Integer restDurationSeconds, String status, LocalDateTime completedAt) {
+    }
+
     public record FormattedWorkout(Long id, String name, LocalDateTime completedAt, Integer durationMinutes,
-            Integer exerciseCount, BigDecimal totalVolumeKg, String dateDay, String dateMonth) {
+            Integer exerciseCount, Integer completedSetCount, BigDecimal totalVolumeKg, String dateDay, String dateMonth) {
     }
 }

@@ -1,0 +1,5 @@
+{
+  "exclude": [
+    "src/main/resources/application*.yml"
+  ]
+}
