@@ -7,7 +7,7 @@ spring:
     password: ${DB_PASSWORD:}
     driver-class-name: com.mysql.cj.jdbc.Driver
   flyway:
-    enabled: ${FLYWAY_ENABLED:false}
+    enabled: ${FLYWAY_ENABLED:true}
     locations: classpath:db/migration
   jackson:
     time-zone: UTC
@@ -24,3 +24,7 @@ management:
     web:
       exposure:
         include: health,info
+
+auth:
+  jwt:
+    secret: ${AUTH_JWT_SECRET:}

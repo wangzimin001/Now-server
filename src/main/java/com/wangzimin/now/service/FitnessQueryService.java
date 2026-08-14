@@ -1,6 +1,7 @@
 package com.wangzimin.now.service;
 
 import java.math.BigDecimal;
+import java.sql.Types;
 import java.time.DayOfWeek;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -28,16 +29,22 @@ public class FitnessQueryService {
     }
 
     public DashboardResponse dashboard() {
+        return dashboard(null);
+    }
+
+    public DashboardResponse dashboard(Long userId) {
         PlanRow plan = jdbcClient.sql("""
                         SELECT wp.id, wp.name, wp.estimated_minutes AS estimatedMinutes,
                                wp.weekly_target AS weeklyTarget, COUNT(pe.id) AS exerciseCount
                         FROM workout_plan wp
                         LEFT JOIN plan_exercise pe ON pe.plan_id = wp.id
                         WHERE wp.is_active = TRUE
+                          AND (wp.owner_user_id IS NULL OR wp.owner_user_id = :userId)
                         GROUP BY wp.id, wp.name, wp.estimated_minutes, wp.weekly_target
-                        ORDER BY wp.id
+                        ORDER BY MAX(wp.owner_user_id IS NOT NULL) DESC, wp.id
                         LIMIT 1
                         """)
+                .param("userId", userId, Types.BIGINT)
                 .query(PlanRow.class)
                 .optional()
                 .orElse(new PlanRow(0L, "暂无训练模板", 0, 3, 0));
@@ -46,12 +53,14 @@ public class FitnessQueryService {
                         SELECT COUNT(*)
                         FROM workout_session
                         WHERE status = 'COMPLETED'
+                          AND ((:userId IS NULL AND owner_user_id IS NULL) OR owner_user_id = :userId)
                           AND ended_at >= DATE_SUB(CURRENT_DATE, INTERVAL WEEKDAY(CURRENT_DATE) DAY)
                         """)
+                .param("userId", userId, Types.BIGINT)
                 .query(Integer.class)
                 .single();
 
-        WorkoutHistoryItem recentWorkout = history().stream()
+        WorkoutHistoryItem recentWorkout = history(userId).stream()
                 .findFirst()
                 .orElse(new WorkoutHistoryItem(0L, "暂无训练", LocalDateTime.now(), 0, 0, 0, BigDecimal.ZERO));
 
@@ -66,21 +75,29 @@ public class FitnessQueryService {
     }
 
     public List<WorkoutPlanResponse> workoutPlans() {
+        return workoutPlans(null);
+    }
+
+    public List<WorkoutPlanResponse> workoutPlans(Long userId) {
         List<WorkoutPlanRow> plans = jdbcClient.sql("""
                         SELECT wp.id, wp.name, wp.description,
                                wp.estimated_minutes AS estimatedMinutes,
                                COALESCE(plan_usage.usage_count, 0) AS usageCount,
-                               plan_usage.last_used_at AS lastUsedAt
+                               plan_usage.last_used_at AS lastUsedAt,
+                               (wp.owner_user_id IS NOT NULL) AS ownedByCurrentUser
                         FROM workout_plan wp
                         LEFT JOIN (
                             SELECT plan_id, COUNT(*) AS usage_count, MAX(ended_at) AS last_used_at
                             FROM workout_session
                             WHERE status = 'COMPLETED'
+                              AND ((:userId IS NULL AND owner_user_id IS NULL) OR owner_user_id = :userId)
                             GROUP BY plan_id
                         ) plan_usage ON plan_usage.plan_id = wp.id
                         WHERE wp.is_active = TRUE
-                        ORDER BY wp.id
+                          AND (wp.owner_user_id IS NULL OR wp.owner_user_id = :userId)
+                        ORDER BY (wp.owner_user_id IS NOT NULL) DESC, wp.id
                         """)
+                .param("userId", userId, Types.BIGINT)
                 .query(WorkoutPlanRow.class)
                 .list();
 
@@ -102,8 +119,12 @@ public class FitnessQueryService {
                                ) AS gifUrl
                         FROM plan_exercise pe
                         JOIN exercise e ON e.id = pe.exercise_id
+                        JOIN workout_plan wp ON wp.id = pe.plan_id
+                        WHERE wp.is_active = TRUE
+                          AND (wp.owner_user_id IS NULL OR wp.owner_user_id = :userId)
                         ORDER BY pe.plan_id, pe.exercise_order
                         """)
+                .param("userId", userId, Types.BIGINT)
                 .query(PlanExercise.class)
                 .list();
 
@@ -120,12 +141,17 @@ public class FitnessQueryService {
                         plan.estimatedMinutes(),
                         plan.usageCount(),
                         plan.lastUsedAt(),
+                        plan.ownedByCurrentUser(),
                         exercisesByPlan.getOrDefault(plan.id(), List.of())))
                 .toList();
     }
 
     public WorkoutPlanResponse workoutPlan(Long planId) {
-        return workoutPlans().stream()
+        return workoutPlan(planId, null);
+    }
+
+    public WorkoutPlanResponse workoutPlan(Long planId, Long userId) {
+        return workoutPlans(userId).stream()
                 .filter(plan -> plan.id().equals(planId))
                 .findFirst()
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "训练模板不存在"));
@@ -341,6 +367,10 @@ public class FitnessQueryService {
     }
 
     public List<WorkoutHistoryItem> history() {
+        return history(null);
+    }
+
+    public List<WorkoutHistoryItem> history(Long userId) {
         return jdbcClient.sql("""
                         SELECT ws.id, ws.name_snapshot AS name, ws.ended_at AS completedAt,
                                ws.duration_minutes AS durationMinutes,
@@ -351,22 +381,30 @@ public class FitnessQueryService {
                         LEFT JOIN session_exercise se ON se.session_id = ws.id
                         LEFT JOIN set_record sr ON sr.session_exercise_id = se.id
                         WHERE ws.status = 'COMPLETED'
+                          AND ((:userId IS NULL AND ws.owner_user_id IS NULL) OR ws.owner_user_id = :userId)
                         GROUP BY ws.id, ws.name_snapshot, ws.ended_at, ws.duration_minutes, ws.total_volume_kg
                         ORDER BY ws.ended_at DESC
                         LIMIT 200
                         """)
+                .param("userId", userId, Types.BIGINT)
                 .query(WorkoutHistoryItem.class)
                 .list();
     }
 
     public WorkoutHistoryDetail historyDetail(Long sessionId) {
+        return historyDetail(sessionId, null);
+    }
+
+    public WorkoutHistoryDetail historyDetail(Long sessionId, Long userId) {
         WorkoutHistoryDetailRow session = jdbcClient.sql("""
                         SELECT id, name_snapshot AS name, ended_at AS completedAt,
                                duration_minutes AS durationMinutes, total_volume_kg AS totalVolumeKg
                         FROM workout_session
                         WHERE id = :sessionId AND status = 'COMPLETED'
+                          AND ((:userId IS NULL AND owner_user_id IS NULL) OR owner_user_id = :userId)
                         """)
                 .param("sessionId", sessionId)
+                .param("userId", userId, Types.BIGINT)
                 .query(WorkoutHistoryDetailRow.class)
                 .optional()
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "训练记录不存在"));
@@ -441,7 +479,12 @@ public class FitnessQueryService {
     }
 
     record WorkoutPlanRow(Long id, String name, String description, Integer estimatedMinutes,
-            Long usageCount, LocalDateTime lastUsedAt) {
+            Long usageCount, LocalDateTime lastUsedAt, Boolean ownedByCurrentUser) {
+
+        WorkoutPlanRow(Long id, String name, String description, Integer estimatedMinutes,
+                Long usageCount, LocalDateTime lastUsedAt) {
+            this(id, name, description, estimatedMinutes, usageCount, lastUsedAt, false);
+        }
     }
 
     public record DashboardResponse(TodayPlan todayPlan, List<Metric> metrics, WeekSummary week,
@@ -462,11 +505,11 @@ public class FitnessQueryService {
     }
 
     public record WorkoutPlanResponse(Long id, String name, String description, Integer estimatedMinutes,
-            Long usageCount, LocalDateTime lastUsedAt, List<PlanExercise> exercises) {
+            Long usageCount, LocalDateTime lastUsedAt, Boolean ownedByCurrentUser, List<PlanExercise> exercises) {
 
         public WorkoutPlanResponse(Long id, String name, String description, Integer estimatedMinutes,
                 List<PlanExercise> exercises) {
-            this(id, name, description, estimatedMinutes, 0L, null, exercises);
+            this(id, name, description, estimatedMinutes, 0L, null, false, exercises);
         }
     }
 

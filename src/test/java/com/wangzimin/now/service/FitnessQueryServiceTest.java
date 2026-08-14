@@ -5,6 +5,8 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -33,6 +35,7 @@ class FitnessQueryServiceTest {
                 1L, "上肢力量", completedAt, 45, 5, 16, BigDecimal.valueOf(2400));
 
         when(jdbcClient.sql(anyString())).thenReturn(statement);
+        when(statement.param(anyString(), any(), anyInt())).thenReturn(statement);
         when(statement.query(WorkoutHistoryItem.class)).thenReturn(query);
         when(query.list()).thenReturn(List.of(expected));
 
@@ -45,6 +48,7 @@ class FitnessQueryServiceTest {
         assertTrue(historySql.contains("COUNT(DISTINCT se.id) AS exerciseCount"));
         assertTrue(historySql.contains("sr.status = 'COMPLETED'"));
         assertTrue(historySql.contains("LEFT JOIN set_record sr"));
+        assertTrue(historySql.contains("ws.owner_user_id = :userId"));
         assertTrue(historySql.contains("LIMIT 200"));
     }
 
@@ -59,6 +63,8 @@ class FitnessQueryServiceTest {
         LocalDateTime lastUsedAt = LocalDateTime.of(2026, 8, 10, 12, 30);
 
         when(jdbcClient.sql(anyString())).thenReturn(planStatement, exerciseStatement);
+        when(planStatement.param(anyString(), any(), anyInt())).thenReturn(planStatement);
+        when(exerciseStatement.param(anyString(), any(), anyInt())).thenReturn(exerciseStatement);
         when(planStatement.query(FitnessQueryService.WorkoutPlanRow.class)).thenReturn(planQuery);
         when(exerciseStatement.query(PlanExercise.class)).thenReturn(exerciseQuery);
         when(planQuery.list()).thenReturn(List.of(
@@ -84,6 +90,8 @@ class FitnessQueryServiceTest {
         assertTrue(planSql.contains("WHERE status = 'COMPLETED'"));
         assertTrue(planSql.contains("GROUP BY plan_id"));
         assertTrue(planSql.contains("LEFT JOIN ("));
+        assertTrue(planSql.contains("wp.owner_user_id IS NULL OR wp.owner_user_id = :userId"));
+        assertTrue(planSql.contains("owner_user_id = :userId"));
         assertFalse(planSql.contains("plan_exercise"));
 
         String exerciseSql = sqlCaptor.getAllValues().get(1);

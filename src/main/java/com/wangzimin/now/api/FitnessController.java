@@ -17,6 +17,8 @@ import com.wangzimin.now.service.WorkoutService.WorkoutPlanRequest;
 import jakarta.validation.Valid;
 
 import org.springframework.http.HttpStatus;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
+import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -41,34 +43,38 @@ public class FitnessController {
     }
 
     @GetMapping("/dashboard")
-    public DashboardResponse dashboard() {
-        return fitnessQueryService.dashboard();
+    public DashboardResponse dashboard(@AuthenticationPrincipal Jwt jwt) {
+        return fitnessQueryService.dashboard(userId(jwt));
     }
 
     @GetMapping("/workout-plans")
-    public List<WorkoutPlanResponse> workoutPlans() {
-        return fitnessQueryService.workoutPlans();
+    public List<WorkoutPlanResponse> workoutPlans(@AuthenticationPrincipal Jwt jwt) {
+        return fitnessQueryService.workoutPlans(userId(jwt));
     }
 
     @PostMapping("/workout-plans")
     @ResponseStatus(HttpStatus.CREATED)
-    public WorkoutPlanResponse createWorkoutPlan(@Valid @RequestBody WorkoutPlanRequest request) {
-        Long planId = workoutService.createPlan(request);
-        return fitnessQueryService.workoutPlan(planId);
+    public WorkoutPlanResponse createWorkoutPlan(@AuthenticationPrincipal Jwt jwt,
+            @Valid @RequestBody WorkoutPlanRequest request) {
+        Long userId = userId(jwt);
+        Long planId = workoutService.createPlan(userId, request);
+        return fitnessQueryService.workoutPlan(planId, userId);
     }
 
     @PutMapping("/workout-plans/{planId}")
     public WorkoutPlanResponse updateWorkoutPlan(
+            @AuthenticationPrincipal Jwt jwt,
             @PathVariable Long planId,
             @Valid @RequestBody WorkoutPlanRequest request) {
-        workoutService.updatePlan(planId, request);
-        return fitnessQueryService.workoutPlan(planId);
+        Long userId = userId(jwt);
+        workoutService.updatePlan(userId, planId, request);
+        return fitnessQueryService.workoutPlan(planId, userId);
     }
 
     @DeleteMapping("/workout-plans/{planId}")
     @ResponseStatus(HttpStatus.NO_CONTENT)
-    public void deleteWorkoutPlan(@PathVariable Long planId) {
-        workoutService.deletePlan(planId);
+    public void deleteWorkoutPlan(@AuthenticationPrincipal Jwt jwt, @PathVariable Long planId) {
+        workoutService.deletePlan(userId(jwt), planId);
     }
 
     @GetMapping("/exercises")
@@ -101,18 +107,23 @@ public class FitnessController {
     }
 
     @GetMapping("/workouts/history")
-    public List<WorkoutHistoryItem> history() {
-        return fitnessQueryService.history();
+    public List<WorkoutHistoryItem> history(@AuthenticationPrincipal Jwt jwt) {
+        return fitnessQueryService.history(userId(jwt));
     }
 
     @GetMapping("/workouts/history/{sessionId}")
-    public WorkoutHistoryDetail historyDetail(@PathVariable Long sessionId) {
-        return fitnessQueryService.historyDetail(sessionId);
+    public WorkoutHistoryDetail historyDetail(@AuthenticationPrincipal Jwt jwt, @PathVariable Long sessionId) {
+        return fitnessQueryService.historyDetail(sessionId, userId(jwt));
     }
 
     @PostMapping("/workouts")
     @ResponseStatus(HttpStatus.CREATED)
-    public WorkoutCompletionResponse completeWorkout(@Valid @RequestBody WorkoutCompletionRequest request) {
-        return workoutService.completeWorkout(request);
+    public WorkoutCompletionResponse completeWorkout(@AuthenticationPrincipal Jwt jwt,
+            @Valid @RequestBody WorkoutCompletionRequest request) {
+        return workoutService.completeWorkout(userId(jwt), request);
+    }
+
+    private Long userId(Jwt jwt) {
+        return jwt == null ? null : Long.valueOf(jwt.getSubject());
     }
 }

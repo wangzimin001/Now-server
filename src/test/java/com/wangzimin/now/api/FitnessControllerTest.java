@@ -28,6 +28,7 @@ import com.wangzimin.now.service.WorkoutService.WorkoutPlanRequest;
 import com.wangzimin.now.service.WorkoutService.WorkoutSetRequest;
 
 import org.junit.jupiter.api.Test;
+import org.springframework.security.oauth2.jwt.Jwt;
 
 class FitnessControllerTest {
 
@@ -71,16 +72,17 @@ class FitnessControllerTest {
         WorkoutPlanResponse response = new WorkoutPlanResponse(
                 9L, "胸背训练", "推拉组合", 50,
                 List.of(new PlanExercise(9L, 100025L, "杠铃卧推", "胸部", 4, 8, 120)));
-        when(workoutService.createPlan(request)).thenReturn(9L);
-        when(queryService.workoutPlan(9L)).thenReturn(response);
+        Jwt jwt = jwt(7L);
+        when(workoutService.createPlan(7L, request)).thenReturn(9L);
+        when(queryService.workoutPlan(9L, 7L)).thenReturn(response);
 
         FitnessController controller = new FitnessController(queryService, workoutService);
 
-        assertSame(response, controller.createWorkoutPlan(request));
-        assertSame(response, controller.updateWorkoutPlan(9L, request));
-        controller.deleteWorkoutPlan(9L);
-        verify(workoutService).updatePlan(9L, request);
-        verify(workoutService).deletePlan(9L);
+        assertSame(response, controller.createWorkoutPlan(jwt, request));
+        assertSame(response, controller.updateWorkoutPlan(jwt, 9L, request));
+        controller.deleteWorkoutPlan(jwt, 9L);
+        verify(workoutService).updatePlan(7L, 9L, request);
+        verify(workoutService).deletePlan(7L, 9L);
     }
 
     @Test
@@ -98,13 +100,20 @@ class FitnessControllerTest {
                         "杠铃卧推",
                         List.of(new WorkoutSetRequest(1, BigDecimal.valueOf(60), 8, 90, true)))));
         WorkoutCompletionResponse response = new WorkoutCompletionResponse(201L, BigDecimal.valueOf(480));
-        when(workoutService.completeWorkout(request)).thenReturn(response);
+        Jwt jwt = jwt(7L);
+        when(workoutService.completeWorkout(7L, request)).thenReturn(response);
 
         FitnessController controller = new FitnessController(queryService, workoutService);
 
         // 组间歇必须作为组记录的一部分穿过控制器边界，不能在委托前被丢弃。
         assertEquals(90, request.exercises().get(0).sets().get(0).restDurationSeconds());
-        assertSame(response, controller.completeWorkout(request));
-        verify(workoutService).completeWorkout(request);
+        assertSame(response, controller.completeWorkout(jwt, request));
+        verify(workoutService).completeWorkout(7L, request);
+    }
+
+    private Jwt jwt(Long userId) {
+        Jwt jwt = mock(Jwt.class);
+        when(jwt.getSubject()).thenReturn(String.valueOf(userId));
+        return jwt;
     }
 }

@@ -34,12 +34,18 @@ public class WorkoutService {
 
     @Transactional
     public Long createPlan(WorkoutPlanRequest request) {
+        return createPlan(null, request);
+    }
+
+    @Transactional
+    public Long createPlan(Long userId, WorkoutPlanRequest request) {
         KeyHolder keyHolder = new GeneratedKeyHolder();
         jdbcClient.sql("""
                         INSERT INTO workout_plan
-                            (name, description, estimated_minutes, weekly_target, is_active)
-                        VALUES (:name, :description, :estimatedMinutes, 3, TRUE)
+                            (owner_user_id, name, description, estimated_minutes, weekly_target, is_active)
+                        VALUES (:userId, :name, :description, :estimatedMinutes, 3, TRUE)
                         """)
+                .param("userId", userId, Types.BIGINT)
                 .param("name", request.name().trim())
                 .param("description", cleanDescription(request.description()))
                 .param("estimatedMinutes", request.estimatedMinutes())
@@ -56,6 +62,11 @@ public class WorkoutService {
 
     @Transactional
     public void updatePlan(Long planId, WorkoutPlanRequest request) {
+        updatePlan(null, planId, request);
+    }
+
+    @Transactional
+    public void updatePlan(Long userId, Long planId, WorkoutPlanRequest request) {
         int changed = jdbcClient.sql("""
                         UPDATE workout_plan
                         SET name = :name,
@@ -63,11 +74,13 @@ public class WorkoutService {
                             estimated_minutes = :estimatedMinutes,
                             is_active = TRUE
                         WHERE id = :planId AND is_active = TRUE
+                          AND ((:userId IS NULL AND owner_user_id IS NULL) OR owner_user_id = :userId)
                         """)
                 .param("name", request.name().trim())
                 .param("description", cleanDescription(request.description()))
                 .param("estimatedMinutes", request.estimatedMinutes())
                 .param("planId", planId)
+                .param("userId", userId, Types.BIGINT)
                 .update();
         requirePlan(changed);
         replacePlanExercises(planId, request.exercises());
@@ -75,21 +88,49 @@ public class WorkoutService {
 
     @Transactional
     public void deletePlan(Long planId) {
+        deletePlan(null, planId);
+    }
+
+    @Transactional
+    public void deletePlan(Long userId, Long planId) {
         int changed = jdbcClient.sql("""
                         UPDATE workout_plan
                         SET is_active = FALSE
                         WHERE id = :planId AND is_active = TRUE
+                          AND ((:userId IS NULL AND owner_user_id IS NULL) OR owner_user_id = :userId)
                         """)
                 .param("planId", planId)
+                .param("userId", userId, Types.BIGINT)
                 .update();
         requirePlan(changed);
     }
 
     @Transactional
     public WorkoutCompletionResponse completeWorkout(WorkoutCompletionRequest request) {
+        return completeWorkout(null, request);
+    }
+
+    @Transactional
+    public WorkoutCompletionResponse completeWorkout(Long userId, WorkoutCompletionRequest request) {
         if (request.endedAt().isBefore(request.startedAt())) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "训练结束时间不能早于开始时间");
         }
+
+        if (request.clientRecordId() != null && !request.clientRecordId().isBlank()) {
+            WorkoutCompletionResponse existing = jdbcClient.sql("""
+                            SELECT id, total_volume_kg AS totalVolumeKg
+                            FROM workout_session
+                            WHERE owner_user_id = :userId AND client_record_id = :clientRecordId
+                            """)
+                    .param("userId", userId, Types.BIGINT)
+                    .param("clientRecordId", request.clientRecordId().trim())
+                    .query(WorkoutCompletionResponse.class)
+                    .optional()
+                    .orElse(null);
+            if (existing != null) return existing;
+        }
+
+        validatePlanAccess(userId, request.planId());
 
         BigDecimal totalVolume = request.exercises().stream()
                 .flatMap(exercise -> exercise.sets().stream())
@@ -100,10 +141,12 @@ public class WorkoutService {
         KeyHolder sessionKeyHolder = new GeneratedKeyHolder();
         jdbcClient.sql("""
                         INSERT INTO workout_session
-                            (plan_id, name_snapshot, started_at, ended_at, duration_minutes, total_volume_kg, status)
+                            (owner_user_id, client_record_id, plan_id, name_snapshot, started_at, ended_at, duration_minutes, total_volume_kg, status)
                         VALUES
-                            (:planId, :name, :startedAt, :endedAt, :durationMinutes, :totalVolume, 'COMPLETED')
+                            (:userId, :clientRecordId, :planId, :name, :startedAt, :endedAt, :durationMinutes, :totalVolume, 'COMPLETED')
                         """)
+                .param("userId", userId, Types.BIGINT)
+                .param("clientRecordId", cleanClientRecordId(request.clientRecordId()), Types.VARCHAR)
                 .param("planId", request.planId(), Types.BIGINT)
                 .param("name", request.name().trim())
                 .param("startedAt", Timestamp.from(request.startedAt()))
@@ -125,6 +168,20 @@ public class WorkoutService {
         }
 
         return new WorkoutCompletionResponse(sessionId, totalVolume);
+    }
+
+    private void validatePlanAccess(Long userId, Long planId) {
+        if (planId == null) return;
+        int count = jdbcClient.sql("""
+                        SELECT COUNT(*) FROM workout_plan
+                        WHERE id = :planId AND is_active = TRUE
+                          AND (owner_user_id IS NULL OR owner_user_id = :userId)
+                        """)
+                .param("planId", planId)
+                .param("userId", userId, Types.BIGINT)
+                .query(Integer.class)
+                .single();
+        if (count == 0) throw new ResponseStatusException(HttpStatus.NOT_FOUND, "训练模板不存在");
     }
 
     private void replacePlanExercises(Long planId, List<PlanExerciseRequest> exercises) {
@@ -197,6 +254,10 @@ public class WorkoutService {
         return description == null ? "" : description.trim();
     }
 
+    private String cleanClientRecordId(String value) {
+        return value == null || value.isBlank() ? null : value.trim();
+    }
+
     private void requirePlan(int changed) {
         if (changed == 0) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "训练模板不存在");
@@ -223,7 +284,13 @@ public class WorkoutService {
             @NotNull Instant startedAt,
             @NotNull Instant endedAt,
             @NotNull @Min(1) @Max(1440) Integer durationMinutes,
-            @NotNull @Size(min = 1, max = 100) List<@Valid WorkoutExerciseRequest> exercises) {
+            @NotNull @Size(min = 1, max = 100) List<@Valid WorkoutExerciseRequest> exercises,
+            @Size(max = 80) String clientRecordId) {
+
+        public WorkoutCompletionRequest(Long planId, String name, Instant startedAt, Instant endedAt,
+                Integer durationMinutes, List<WorkoutExerciseRequest> exercises) {
+            this(planId, name, startedAt, endedAt, durationMinutes, exercises, null);
+        }
     }
 
     public record WorkoutExerciseRequest(
