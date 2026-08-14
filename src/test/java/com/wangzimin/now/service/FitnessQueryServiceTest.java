@@ -92,6 +92,8 @@ class FitnessQueryServiceTest {
         assertTrue(planSql.contains("LEFT JOIN ("));
         assertTrue(planSql.contains("wp.owner_user_id IS NULL OR wp.owner_user_id = :userId"));
         assertTrue(planSql.contains("owner_user_id = :userId"));
+        assertTrue(planSql.contains("user_hidden_workout_plan"));
+        assertTrue(planSql.contains("hidden.user_id = :userId"));
         assertFalse(planSql.contains("plan_exercise"));
 
         String exerciseSql = sqlCaptor.getAllValues().get(1);

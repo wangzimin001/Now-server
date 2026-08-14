@@ -40,6 +40,10 @@ public class FitnessQueryService {
                         LEFT JOIN plan_exercise pe ON pe.plan_id = wp.id
                         WHERE wp.is_active = TRUE
                           AND (wp.owner_user_id IS NULL OR wp.owner_user_id = :userId)
+                          AND (:userId IS NULL OR NOT EXISTS (
+                              SELECT 1 FROM user_hidden_workout_plan hidden
+                              WHERE hidden.user_id = :userId AND hidden.plan_id = wp.id
+                          ))
                         GROUP BY wp.id, wp.name, wp.estimated_minutes, wp.weekly_target
                         ORDER BY MAX(wp.owner_user_id IS NOT NULL) DESC, wp.id
                         LIMIT 1
@@ -95,6 +99,10 @@ public class FitnessQueryService {
                         ) plan_usage ON plan_usage.plan_id = wp.id
                         WHERE wp.is_active = TRUE
                           AND (wp.owner_user_id IS NULL OR wp.owner_user_id = :userId)
+                          AND (:userId IS NULL OR NOT EXISTS (
+                              SELECT 1 FROM user_hidden_workout_plan hidden
+                              WHERE hidden.user_id = :userId AND hidden.plan_id = wp.id
+                          ))
                         ORDER BY (wp.owner_user_id IS NOT NULL) DESC, wp.id
                         """)
                 .param("userId", userId, Types.BIGINT)
@@ -122,6 +130,10 @@ public class FitnessQueryService {
                         JOIN workout_plan wp ON wp.id = pe.plan_id
                         WHERE wp.is_active = TRUE
                           AND (wp.owner_user_id IS NULL OR wp.owner_user_id = :userId)
+                          AND (:userId IS NULL OR NOT EXISTS (
+                              SELECT 1 FROM user_hidden_workout_plan hidden
+                              WHERE hidden.user_id = :userId AND hidden.plan_id = wp.id
+                          ))
                         ORDER BY pe.plan_id, pe.exercise_order
                         """)
                 .param("userId", userId, Types.BIGINT)

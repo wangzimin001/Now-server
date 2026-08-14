@@ -93,16 +93,39 @@ public class WorkoutService {
 
     @Transactional
     public void deletePlan(Long userId, Long planId) {
+        if (userId == null) {
+            int changed = jdbcClient.sql("""
+                            UPDATE workout_plan
+                            SET is_active = FALSE
+                            WHERE id = :planId AND is_active = TRUE AND owner_user_id IS NULL
+                            """)
+                    .param("planId", planId)
+                    .update();
+            requirePlan(changed);
+            return;
+        }
+
         int changed = jdbcClient.sql("""
                         UPDATE workout_plan
                         SET is_active = FALSE
                         WHERE id = :planId AND is_active = TRUE
-                          AND ((:userId IS NULL AND owner_user_id IS NULL) OR owner_user_id = :userId)
+                          AND owner_user_id = :userId
                         """)
                 .param("planId", planId)
-                .param("userId", userId, Types.BIGINT)
+                .param("userId", userId)
                 .update();
-        requirePlan(changed);
+        if (changed > 0) return;
+
+        int hidden = jdbcClient.sql("""
+                        INSERT IGNORE INTO user_hidden_workout_plan (user_id, plan_id)
+                        SELECT :userId, id
+                        FROM workout_plan
+                        WHERE id = :planId AND is_active = TRUE AND owner_user_id IS NULL
+                        """)
+                .param("userId", userId)
+                .param("planId", planId)
+                .update();
+        requirePlan(hidden);
     }
 
     @Transactional
@@ -176,6 +199,10 @@ public class WorkoutService {
                         SELECT COUNT(*) FROM workout_plan
                         WHERE id = :planId AND is_active = TRUE
                           AND (owner_user_id IS NULL OR owner_user_id = :userId)
+                          AND NOT EXISTS (
+                              SELECT 1 FROM user_hidden_workout_plan hidden
+                              WHERE hidden.user_id = :userId AND hidden.plan_id = workout_plan.id
+                          )
                         """)
                 .param("planId", planId)
                 .param("userId", userId, Types.BIGINT)
