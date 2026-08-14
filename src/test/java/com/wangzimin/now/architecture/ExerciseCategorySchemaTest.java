@@ -26,7 +26,7 @@ class ExerciseCategorySchemaTest {
     @Test
     void runtimeQueryUsesGenericSubcategoryTablesOnly() throws IOException {
         String source = Files.readString(Path.of("src", "main", "java", "com", "wangzimin", "now",
-                "service", "FitnessQueryService.java"));
+                "repository", "FitnessQueryRepository.java"));
 
         assertTrue(source.contains("exercise_subcategory_mapping"));
         assertTrue(source.contains("exercise_subcategory"));

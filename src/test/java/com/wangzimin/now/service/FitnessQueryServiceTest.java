@@ -16,9 +16,10 @@ import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.List;
 
-import com.wangzimin.now.service.FitnessQueryService.PlanExercise;
-import com.wangzimin.now.service.FitnessQueryService.WorkoutHistoryItem;
-import com.wangzimin.now.service.FitnessQueryService.WorkoutPlanResponse;
+import com.wangzimin.now.repository.FitnessQueryRepository;
+import com.wangzimin.now.repository.FitnessQueryRepository.PlanExercise;
+import com.wangzimin.now.repository.FitnessQueryRepository.WorkoutHistoryItem;
+import com.wangzimin.now.repository.FitnessQueryRepository.WorkoutPlanResponse;
 import org.junit.jupiter.api.Test;
 import org.springframework.jdbc.core.simple.JdbcClient;
 
@@ -40,7 +41,8 @@ class FitnessQueryServiceTest {
         when(statement.query(WorkoutHistoryItem.class)).thenReturn(query);
         when(query.list()).thenReturn(List.of(expected));
 
-        List<WorkoutHistoryItem> history = new FitnessQueryService(jdbcClient).history();
+        List<WorkoutHistoryItem> history =
+                new FitnessQueryService(new FitnessQueryRepository(jdbcClient)).history();
 
         assertEquals(16, history.get(0).completedSetCount());
         var sqlCaptor = org.mockito.ArgumentCaptor.forClass(String.class);
@@ -59,7 +61,8 @@ class FitnessQueryServiceTest {
         JdbcClient jdbcClient = mock(JdbcClient.class);
         JdbcClient.StatementSpec planStatement = mock(JdbcClient.StatementSpec.class);
         JdbcClient.StatementSpec exerciseStatement = mock(JdbcClient.StatementSpec.class);
-        JdbcClient.MappedQuerySpec<FitnessQueryService.WorkoutPlanRow> planQuery = mock(JdbcClient.MappedQuerySpec.class);
+        JdbcClient.MappedQuerySpec<FitnessQueryRepository.WorkoutPlanRow> planQuery =
+                mock(JdbcClient.MappedQuerySpec.class);
         JdbcClient.MappedQuerySpec<PlanExercise> exerciseQuery = mock(JdbcClient.MappedQuerySpec.class);
         LocalDateTime lastUsedAt = LocalDateTime.of(2026, 8, 10, 12, 30);
 
@@ -67,16 +70,17 @@ class FitnessQueryServiceTest {
         when(planStatement.param(anyString(), any(), anyInt())).thenReturn(planStatement);
         when(exerciseStatement.param(anyString(), any(), anyInt())).thenReturn(exerciseStatement);
         when(planStatement.param(anyString(), any())).thenReturn(planStatement);
-        when(planStatement.query(FitnessQueryService.WorkoutPlanRow.class)).thenReturn(planQuery);
+        when(planStatement.query(FitnessQueryRepository.WorkoutPlanRow.class)).thenReturn(planQuery);
         when(exerciseStatement.query(PlanExercise.class)).thenReturn(exerciseQuery);
         when(planQuery.list()).thenReturn(List.of(
-                new FitnessQueryService.WorkoutPlanRow(1L, "Used", "desc", 45, 2L, lastUsedAt),
-                new FitnessQueryService.WorkoutPlanRow(2L, "Unused", "desc", 30, 0L, null)));
+                new FitnessQueryRepository.WorkoutPlanRow(1L, "Used", "desc", 45, 2L, lastUsedAt),
+                new FitnessQueryRepository.WorkoutPlanRow(2L, "Unused", "desc", 30, 0L, null)));
         when(exerciseQuery.list()).thenReturn(List.of(
                 new PlanExercise(1L, 10L, "深蹲", "腿部", 3, 10, 90,
                         "/static/exercises/gifs/squat.gif")));
 
-        List<WorkoutPlanResponse> plans = new FitnessQueryService(jdbcClient).workoutPlans();
+        List<WorkoutPlanResponse> plans =
+                new FitnessQueryService(new FitnessQueryRepository(jdbcClient)).workoutPlans();
 
         assertEquals(2L, plans.get(0).usageCount());
         assertEquals(lastUsedAt, plans.get(0).lastUsedAt());
@@ -114,7 +118,8 @@ class FitnessQueryServiceTest {
     void latestPerformanceSkipsDatabaseWhenExerciseIdsAreEmpty() {
         JdbcClient jdbcClient = mock(JdbcClient.class);
 
-        assertTrue(new FitnessQueryService(jdbcClient).latestExercisePerformances(7L, List.of()).isEmpty());
+        assertTrue(new FitnessQueryService(new FitnessQueryRepository(jdbcClient))
+                .latestExercisePerformances(7L, List.of()).isEmpty());
 
         verify(jdbcClient, times(0)).sql(anyString());
     }
@@ -130,7 +135,7 @@ class FitnessQueryServiceTest {
         when(statement.query(any(Class.class))).thenReturn(query);
         when(query.list()).thenReturn(List.of());
 
-        assertTrue(new FitnessQueryService(jdbcClient)
+        assertTrue(new FitnessQueryService(new FitnessQueryRepository(jdbcClient))
                 .latestExercisePerformances(7L, List.of(100025L, 100026L)).isEmpty());
 
         var sqlCaptor = org.mockito.ArgumentCaptor.forClass(String.class);

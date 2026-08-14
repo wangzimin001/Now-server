@@ -13,6 +13,9 @@ import static org.mockito.Mockito.when;
 import java.time.Instant;
 import java.util.Optional;
 
+import com.wangzimin.now.repository.TrainingConfigRepository;
+import com.wangzimin.now.repository.TrainingConfigRepository.TrainingConfigRow;
+
 import org.junit.jupiter.api.Test;
 import org.springframework.jdbc.core.RowMapper;
 import org.springframework.jdbc.core.simple.JdbcClient;
@@ -31,12 +34,12 @@ class TrainingConfigServiceTest {
         JdbcClient.StatementSpec findStatement = mock(JdbcClient.StatementSpec.class);
         JdbcClient.StatementSpec insertStatement = mock(JdbcClient.StatementSpec.class);
         JdbcClient.StatementSpec reloadStatement = mock(JdbcClient.StatementSpec.class);
-        JdbcClient.MappedQuerySpec<TrainingConfigService.TrainingConfigResponse> emptyQuery = mock(JdbcClient.MappedQuerySpec.class);
-        JdbcClient.MappedQuerySpec<TrainingConfigService.TrainingConfigResponse> savedQuery = mock(JdbcClient.MappedQuerySpec.class);
+        JdbcClient.MappedQuerySpec<TrainingConfigRow> emptyQuery = mock(JdbcClient.MappedQuerySpec.class);
+        JdbcClient.MappedQuerySpec<TrainingConfigRow> savedQuery = mock(JdbcClient.MappedQuerySpec.class);
         ObjectMapper objectMapper = new ObjectMapper();
         Instant updatedAt = Instant.parse("2026-08-14T07:00:00Z");
-        var expected = new TrainingConfigService.TrainingConfigResponse(
-                "cycle", objectMapper.createObjectNode().putArray("days").addObject(), updatedAt, updatedAt, 1, true);
+        var expected = new TrainingConfigRow(
+                "cycle", objectMapper.createObjectNode().putArray("days").addObject(), updatedAt, updatedAt, 1);
 
         when(jdbcClient.sql(anyString())).thenReturn(findStatement, insertStatement, reloadStatement);
         when(findStatement.param(anyString(), any())).thenReturn(findStatement);
@@ -51,7 +54,8 @@ class TrainingConfigServiceTest {
         ObjectNode cyclePlan = objectMapper.createObjectNode();
         cyclePlan.putArray("days").addObject().put("type", "rest");
         var request = new TrainingConfigService.TrainingConfigRequest("cycle", cyclePlan, updatedAt);
-        var result = new TrainingConfigService(jdbcClient, objectMapper).save(9L, request);
+        var result = new TrainingConfigService(
+                new TrainingConfigRepository(jdbcClient, objectMapper), objectMapper).save(9L, request);
 
         assertEquals(1, result.revision());
         assertEquals("cycle", result.trainingMode());
@@ -63,11 +67,11 @@ class TrainingConfigServiceTest {
     void olderOfflineChangeDoesNotOverwriteNewerRemoteConfig() {
         JdbcClient jdbcClient = mock(JdbcClient.class);
         JdbcClient.StatementSpec statement = mock(JdbcClient.StatementSpec.class);
-        JdbcClient.MappedQuerySpec<TrainingConfigService.TrainingConfigResponse> query = mock(JdbcClient.MappedQuerySpec.class);
+        JdbcClient.MappedQuerySpec<TrainingConfigRow> query = mock(JdbcClient.MappedQuerySpec.class);
         ObjectMapper objectMapper = new ObjectMapper();
         Instant remoteTime = Instant.parse("2026-08-14T06:00:00Z");
-        var remote = new TrainingConfigService.TrainingConfigResponse(
-                "cycle", objectMapper.createObjectNode(), remoteTime, remoteTime, 4, true);
+        var remote = new TrainingConfigRow(
+                "cycle", objectMapper.createObjectNode(), remoteTime, remoteTime, 4);
 
         when(jdbcClient.sql(anyString())).thenReturn(statement);
         when(statement.param(anyString(), any())).thenReturn(statement);
@@ -76,7 +80,8 @@ class TrainingConfigServiceTest {
 
         var request = new TrainingConfigService.TrainingConfigRequest(
                 "free", null, Instant.parse("2026-08-14T05:00:00Z"));
-        var result = new TrainingConfigService(jdbcClient, objectMapper).save(9L, request);
+        var result = new TrainingConfigService(
+                new TrainingConfigRepository(jdbcClient, objectMapper), objectMapper).save(9L, request);
 
         assertFalse(result.applied());
         assertEquals(4, result.revision());
@@ -89,9 +94,12 @@ class TrainingConfigServiceTest {
         ObjectMapper objectMapper = new ObjectMapper();
         ObjectNode cyclePlan = objectMapper.createObjectNode();
         ArrayNode days = cyclePlan.putArray("days");
-        for (int index = 0; index < 31; index++) days.addObject().put("type", "rest");
+        for (int index = 0; index < 31; index++) {
+            days.addObject().put("type", "rest");
+        }
 
-        var service = new TrainingConfigService(mock(JdbcClient.class), objectMapper);
+        var service = new TrainingConfigService(
+                new TrainingConfigRepository(mock(JdbcClient.class), objectMapper), objectMapper);
         var request = new TrainingConfigService.TrainingConfigRequest("cycle", cyclePlan, Instant.now());
 
         assertThrows(ResponseStatusException.class, () -> service.save(9L, request));

@@ -1,5 +1,14 @@
 # Now-server（此刻后端）项目长期上下文
 
+## 2026-08-14 Repository 分层与强制大括号
+
+- 新增 `repository` 数据访问层：`AuthRepository`、`TrainingConfigRepository`、`FitnessQueryRepository`、`WorkoutRepository` 统一负责 SQL、参数绑定、主键读取和结果映射；
+- `AuthService`、`TrainingConfigService`、`FitnessQueryService`、`WorkoutService` 不再依赖 `JdbcClient` 或包含 SQL；事务边界和用例入口保留在 Service；
+- 删除未实际使用的 MyBatis-Plus，显式使用 `spring-boot-starter-jdbc`，避免同一项目混用两套持久化技术；
+- `AGENTS.md` 新增强制分层规则，并规定所有 Java 控制语句必须使用大括号，单行 `if (...) return/throw` 也不得例外；
+- 代码质量测试新增“Service 禁止 JDBC/SQL”和“控制语句必须使用大括号”两项架构门禁；Maven 共 28 项测试全部通过；
+- 新版 JAR 已重新构建并启动，`8081` 健康状态为 `UP`；真实验证分类 10 类、中胸筛选 85 条、公共看板、3 个训练模板及登录失败 401 友好消息均正常。
+
 ## 2026-08-14 强制开发规范与动作分类规范化
 
 - 新增仓库级 `AGENTS.md`，永久规定：业务魔法值必须进入语义明确的枚举、所有方法必须有有效注释、生产代码注释率不得低于 30%、后端更新后必须测试、构建、重启并完成真实接口验收；

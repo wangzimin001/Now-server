@@ -32,7 +32,9 @@ public class ApiExceptionHandler {
             HttpServletRequest request) {
         HttpStatusCode status = exception.getStatusCode();
         String message = exception.getReason();
-        if (message == null || message.isBlank()) message = SystemText.REQUEST_FAILED.value();
+        if (message == null || message.isBlank()) {
+            message = SystemText.REQUEST_FAILED.value();
+        }
         return ResponseEntity.status(status)
                 .body(new ApiError(status.value(), message, request.getRequestURI()));
     }

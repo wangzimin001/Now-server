@@ -17,11 +17,12 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 import java.math.BigDecimal;
 import java.util.List;
 
-import com.wangzimin.now.service.WorkoutService.ExercisePerformanceSummary;
-import com.wangzimin.now.service.WorkoutService.HistoricalExerciseMetricRow;
-import com.wangzimin.now.service.WorkoutService.HistoricalWeightRepetitionRow;
-import com.wangzimin.now.service.WorkoutService.WorkoutExerciseRequest;
-import com.wangzimin.now.service.WorkoutService.WorkoutSetRequest;
+import com.wangzimin.now.repository.WorkoutRepository;
+import com.wangzimin.now.repository.WorkoutRepository.ExercisePerformanceSummary;
+import com.wangzimin.now.repository.WorkoutRepository.HistoricalExerciseMetricRow;
+import com.wangzimin.now.repository.WorkoutRepository.HistoricalWeightRepetitionRow;
+import com.wangzimin.now.repository.WorkoutRepository.WorkoutExerciseRequest;
+import com.wangzimin.now.repository.WorkoutRepository.WorkoutSetRequest;
 
 class WorkoutServiceTest {
 
@@ -33,7 +34,7 @@ class WorkoutServiceTest {
         when(statement.param(anyString(), any())).thenReturn(statement);
         when(statement.update()).thenReturn(1);
 
-        new WorkoutService(jdbcClient).deletePlan(7L, 9L);
+        new WorkoutService(new WorkoutRepository(jdbcClient)).deletePlan(7L, 9L);
 
         var sql = ArgumentCaptor.forClass(String.class);
         verify(jdbcClient).sql(sql.capture());
@@ -52,7 +53,7 @@ class WorkoutServiceTest {
         when(ownedStatement.update()).thenReturn(0);
         when(hiddenStatement.update()).thenReturn(1);
 
-        new WorkoutService(jdbcClient).deletePlan(7L, 9L);
+        new WorkoutService(new WorkoutRepository(jdbcClient)).deletePlan(7L, 9L);
 
         var sql = ArgumentCaptor.forClass(String.class);
         verify(jdbcClient, times(2)).sql(sql.capture());
@@ -69,7 +70,7 @@ class WorkoutServiceTest {
         when(statement.param(anyString(), any(), any(Integer.class))).thenReturn(statement);
         when(statement.update()).thenReturn(1);
 
-        new WorkoutService(jdbcClient).deleteWorkoutHistory(7L, 201L);
+        new WorkoutService(new WorkoutRepository(jdbcClient)).deleteWorkoutHistory(7L, 201L);
 
         var sql = ArgumentCaptor.forClass(String.class);
         verify(jdbcClient).sql(sql.capture());
@@ -101,7 +102,7 @@ class WorkoutServiceTest {
         WorkoutExerciseRequest exercise = new WorkoutExerciseRequest(100025L, "杠铃卧推", List.of(
                 new WorkoutSetRequest(1, BigDecimal.valueOf(60), 10, 90, true),
                 new WorkoutSetRequest(2, BigDecimal.valueOf(55), 12, 90, true)));
-        ExercisePerformanceSummary summary = new WorkoutService(jdbcClient)
+        ExercisePerformanceSummary summary = new WorkoutService(new WorkoutRepository(jdbcClient))
                 .evaluateExercisePerformance(7L, List.of(exercise)).get(0);
 
         assertFalse(summary.firstRecorded());

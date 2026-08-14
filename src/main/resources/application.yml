@@ -12,10 +12,6 @@ spring:
   jackson:
     time-zone: UTC
 
-mybatis-plus:
-  configuration:
-    map-underscore-to-camel-case: true
-
 server:
   port: ${SERVER_PORT:8081}
 

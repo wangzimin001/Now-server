@@ -1,8 +1,5 @@
 package com.wangzimin.now.training;
 
-import java.sql.ResultSet;
-import java.sql.SQLException;
-import java.sql.Timestamp;
 import java.time.Instant;
 
 import com.wangzimin.now.domain.ApiErrorCode;
@@ -10,8 +7,9 @@ import com.wangzimin.now.domain.BusinessRule;
 import com.wangzimin.now.domain.QueryLockMode;
 import com.wangzimin.now.domain.SystemText;
 import com.wangzimin.now.domain.TrainingMode;
+import com.wangzimin.now.repository.TrainingConfigRepository;
+import com.wangzimin.now.repository.TrainingConfigRepository.TrainingConfigRow;
 
-import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -32,17 +30,17 @@ import jakarta.validation.constraints.NotNull;
 @Service
 public class TrainingConfigService {
 
-    private final JdbcClient jdbcClient;
+    private final TrainingConfigRepository trainingConfigRepository;
     private final ObjectMapper objectMapper;
 
     /**
      * 创建训练配置服务。
      *
-     * @param jdbcClient 执行配置 SQL 的客户端
+     * @param trainingConfigRepository 训练配置仓储
      * @param objectMapper 解析和序列化周期 JSON 的映射器
      */
-    public TrainingConfigService(JdbcClient jdbcClient, ObjectMapper objectMapper) {
-        this.jdbcClient = jdbcClient;
+    public TrainingConfigService(TrainingConfigRepository trainingConfigRepository, ObjectMapper objectMapper) {
+        this.trainingConfigRepository = trainingConfigRepository;
         this.objectMapper = objectMapper;
     }
 
@@ -82,32 +80,11 @@ public class TrainingConfigService {
 
         String cyclePlan = writeCyclePlan(request.cyclePlan());
         if (existing.isEmpty()) {
-            jdbcClient.sql("""
-                            INSERT INTO user_training_config
-                                (user_id, training_mode, cycle_plan, client_updated_at, revision)
-                            VALUES (:userId, :trainingMode, CAST(:cyclePlan AS JSON), :clientUpdatedAt, :initialRevision)
-                            """)
-                    .param("userId", userId)
-                    .param("trainingMode", trainingMode.externalValue())
-                    .param("cyclePlan", cyclePlan)
-                    .param("clientUpdatedAt", Timestamp.from(request.clientUpdatedAt()))
-                    .param("initialRevision", BusinessRule.INITIAL_REVISION.value())
-                    .update();
+            trainingConfigRepository.insert(
+                    userId, trainingMode.externalValue(), cyclePlan, request.clientUpdatedAt());
         } else {
-            jdbcClient.sql("""
-                            UPDATE user_training_config
-                            SET training_mode = :trainingMode,
-                                cycle_plan = CAST(:cyclePlan AS JSON),
-                                client_updated_at = :clientUpdatedAt,
-                                revision = revision + :revisionIncrement
-                            WHERE user_id = :userId
-                            """)
-                    .param("trainingMode", trainingMode.externalValue())
-                    .param("cyclePlan", cyclePlan)
-                    .param("clientUpdatedAt", Timestamp.from(request.clientUpdatedAt()))
-                    .param("userId", userId)
-                    .param("revisionIncrement", BusinessRule.INITIAL_REVISION.value())
-                    .update();
+            trainingConfigRepository.update(
+                    userId, trainingMode.externalValue(), cyclePlan, request.clientUpdatedAt());
         }
         return find(userId, QueryLockMode.NONE)
                 .orElseThrow(() -> new IllegalStateException(SystemText.TRAINING_CONFIG_UNREADABLE.value()));
@@ -123,40 +100,20 @@ public class TrainingConfigService {
      * @return 可空配置响应
      */
     private java.util.Optional<TrainingConfigResponse> find(Long userId, QueryLockMode lockMode) {
-        return jdbcClient.sql("""
-                        SELECT training_mode, cycle_plan, client_updated_at, updated_at, revision
-                        FROM user_training_config
-                        WHERE user_id = :userId
-                        """ + lockMode.sqlSuffix())
-                .param("userId", userId)
-                .query(this::mapRow)
-                .optional();
+        return trainingConfigRepository.findByUserId(userId, lockMode)
+                .map(this::toResponse);
     }
 
     /**
-     * 将 JDBC 结果行映射为训练配置响应。
+     * 将仓储投影转换为接口响应。
      *
-     * <p>数据库 JSON 在此边界解析；损坏数据转换为 SQLException，交由数据访问层处理。</p>
-     *
-     * @param resultSet 当前查询结果
-     * @param rowNumber Spring JDBC 行号
+     * @param row 数据库训练配置投影
      * @return 完整训练配置响应
-     * @throws SQLException 字段读取或 JSON 解析失败时抛出
      */
-    private TrainingConfigResponse mapRow(ResultSet resultSet, int rowNumber) throws SQLException {
-        try {
-            String rawPlan = resultSet.getString("cycle_plan");
-            JsonNode cyclePlan = rawPlan == null ? null : objectMapper.readTree(rawPlan);
-            return new TrainingConfigResponse(
-                    resultSet.getString("training_mode"),
-                    cyclePlan,
-                    resultSet.getTimestamp("client_updated_at").toInstant(),
-                    resultSet.getTimestamp("updated_at").toInstant(),
-                    resultSet.getLong("revision"),
-                    true);
-        } catch (JacksonException exception) {
-            throw new SQLException(SystemText.TRAINING_CONFIG_JSON_CORRUPTED.value(), exception);
-        }
+    private TrainingConfigResponse toResponse(TrainingConfigRow row) {
+        return new TrainingConfigResponse(
+                row.trainingMode(), row.cyclePlan(), row.clientUpdatedAt(),
+                row.serverUpdatedAt(), row.revision(), true);
     }
 
     /**
@@ -167,8 +124,12 @@ public class TrainingConfigService {
      * @param cyclePlan 客户端提交的周期 JSON
      */
     private void validateCyclePlan(JsonNode cyclePlan) {
-        if (cyclePlan == null || cyclePlan.isNull()) return;
-        if (!cyclePlan.isObject()) throw ApiErrorCode.TRAINING_CYCLE_FORMAT.exception();
+        if (cyclePlan == null || cyclePlan.isNull()) {
+            return;
+        }
+        if (!cyclePlan.isObject()) {
+            throw ApiErrorCode.TRAINING_CYCLE_FORMAT.exception();
+        }
         JsonNode days = cyclePlan.path("days");
         if (!days.isArray() || days.size() < BusinessRule.TRAINING_CYCLE_MIN_DAYS.value()
                 || days.size() > BusinessRule.TRAINING_CYCLE_MAX_DAYS.value()) {

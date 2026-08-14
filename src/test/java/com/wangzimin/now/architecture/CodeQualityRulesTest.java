@@ -8,6 +8,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.stream.Stream;
 
 import org.junit.jupiter.api.Test;
@@ -66,6 +67,49 @@ class CodeQualityRulesTest {
                             assertFalse(source.contains(literal),
                                     () -> path + " 仍包含未枚举化业务值 " + literal));
                 });
+    }
+
+    @Test
+    void serviceLayerDoesNotContainJdbcOrSql() throws IOException {
+        javaFiles()
+                .filter(path -> path.getFileName().toString().endsWith("Service.java"))
+                .forEach(path -> {
+                    String source = readSource(path);
+                    String upper = source.toUpperCase(Locale.ROOT);
+                    assertFalse(source.contains("JdbcClient"),
+                            () -> path + " 不得直接依赖 JdbcClient");
+                    assertFalse(source.contains(".sql("),
+                            () -> path + " 不得直接调用 SQL");
+                    Stream.of("SELECT ", "INSERT INTO ", "UPDATE ", "DELETE FROM ")
+                            .forEach(keyword -> assertFalse(upper.contains(keyword),
+                                    () -> path + " 不得包含 SQL 关键字 " + keyword.trim()));
+                });
+    }
+
+    @Test
+    void javaControlStatementsAlwaysUseBraces() throws IOException {
+        javaFiles().forEach(path -> {
+            List<String> lines = readLines(path);
+            List<String> violations = new ArrayList<>();
+            for (int index = 0; index < lines.size(); index++) {
+                String line = lines.get(index);
+                String trimmed = line.trim();
+                if (startsConditionalControl(trimmed)) {
+                    int bodyStart = controlBodyStart(line);
+                    if (bodyStart >= 0 && !bodyStartsWithBrace(lines, index, bodyStart)) {
+                        violations.add((index + 1) + ": " + trimmed);
+                    }
+                }
+                if (startsElseWithoutIf(trimmed) && !simpleBodyStartsWithBrace(lines, index, trimmed, "else")) {
+                    violations.add((index + 1) + ": " + trimmed);
+                }
+                if (startsDo(trimmed) && !simpleBodyStartsWithBrace(lines, index, trimmed, "do")) {
+                    violations.add((index + 1) + ": " + trimmed);
+                }
+            }
+            assertTrue(violations.isEmpty(),
+                    () -> path + " 存在省略大括号的控制语句: " + violations);
+        });
     }
 
     private Stream<Path> javaFiles() throws IOException {
@@ -131,6 +175,67 @@ class CodeQualityRulesTest {
             String line = lines.get(index).trim();
             if (line.isBlank() || line.startsWith("@")) continue;
             return line.endsWith("*/") || line.startsWith("//");
+        }
+        return false;
+    }
+
+    private boolean startsConditionalControl(String line) {
+        String value = line.startsWith("}") ? line.substring(1).trim() : line;
+        if (value.startsWith("else ")) {
+            value = value.substring("else".length()).trim();
+        }
+        String normalized = value;
+        return Stream.of("if", "for", "while", "switch")
+                .anyMatch(keyword -> normalized.startsWith(keyword + " ")
+                        || normalized.startsWith(keyword + "("));
+    }
+
+    private boolean startsElseWithoutIf(String line) {
+        String value = line.startsWith("}") ? line.substring(1).trim() : line;
+        return value.startsWith("else") && !value.startsWith("else if");
+    }
+
+    private boolean startsDo(String line) {
+        return line.equals("do") || line.startsWith("do ");
+    }
+
+    private int controlBodyStart(String line) {
+        int opening = line.indexOf('(');
+        if (opening < 0) {
+            return -1;
+        }
+        int depth = 0;
+        for (int index = opening; index < line.length(); index++) {
+            char value = line.charAt(index);
+            if (value == '(') {
+                depth++;
+            } else if (value == ')' && --depth == 0) {
+                return index + 1;
+            }
+        }
+        return -1;
+    }
+
+    private boolean bodyStartsWithBrace(List<String> lines, int lineIndex, int bodyStart) {
+        String remaining = lines.get(lineIndex).substring(bodyStart).trim();
+        return remaining.startsWith("{")
+                || remaining.isEmpty() && nextCodeLineStartsWithBrace(lines, lineIndex + 1);
+    }
+
+    private boolean simpleBodyStartsWithBrace(
+            List<String> lines, int lineIndex, String trimmed, String keyword) {
+        String value = trimmed.startsWith("}") ? trimmed.substring(1).trim() : trimmed;
+        String remaining = value.substring(keyword.length()).trim();
+        return remaining.startsWith("{")
+                || remaining.isEmpty() && nextCodeLineStartsWithBrace(lines, lineIndex + 1);
+    }
+
+    private boolean nextCodeLineStartsWithBrace(List<String> lines, int start) {
+        for (int index = start; index < lines.size(); index++) {
+            String value = lines.get(index).trim();
+            if (!value.isEmpty() && !value.startsWith("//")) {
+                return value.startsWith("{");
+            }
         }
         return false;
     }

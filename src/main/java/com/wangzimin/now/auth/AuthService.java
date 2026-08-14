@@ -13,10 +13,11 @@ import com.wangzimin.now.domain.ApiErrorCode;
 import com.wangzimin.now.domain.BusinessRule;
 import com.wangzimin.now.domain.SystemText;
 import com.wangzimin.now.domain.ValidationRule;
+import com.wangzimin.now.repository.AuthRepository;
+import com.wangzimin.now.repository.AuthRepository.RefreshTokenRow;
+import com.wangzimin.now.repository.AuthRepository.UserRow;
 
 import org.springframework.dao.DuplicateKeyException;
-import org.springframework.jdbc.core.simple.JdbcClient;
-import org.springframework.jdbc.support.GeneratedKeyHolder;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.oauth2.jwt.JwtClaimsSet;
 import org.springframework.security.oauth2.jwt.JwtEncoder;
@@ -37,7 +38,7 @@ import org.springframework.web.server.ResponseStatusException;
 @Service
 public class AuthService {
 
-    private final JdbcClient jdbcClient;
+    private final AuthRepository authRepository;
     private final PasswordEncoder passwordEncoder;
     private final JwtEncoder jwtEncoder;
     private final SecureRandom secureRandom = new SecureRandom();
@@ -45,12 +46,12 @@ public class AuthService {
     /**
      * 创建鉴权服务。
      *
-     * @param jdbcClient 执行账号和令牌 SQL 的客户端
+     * @param authRepository 账号和刷新令牌仓储
      * @param passwordEncoder BCrypt 密码编码器
      * @param jwtEncoder JWT 签发器
      */
-    public AuthService(JdbcClient jdbcClient, PasswordEncoder passwordEncoder, JwtEncoder jwtEncoder) {
-        this.jdbcClient = jdbcClient;
+    public AuthService(AuthRepository authRepository, PasswordEncoder passwordEncoder, JwtEncoder jwtEncoder) {
+        this.authRepository = authRepository;
         this.passwordEncoder = passwordEncoder;
         this.jwtEncoder = jwtEncoder;
     }
@@ -72,18 +73,9 @@ public class AuthService {
             throw ApiErrorCode.USERNAME_FORMAT.exception();
         }
         try {
-            GeneratedKeyHolder keyHolder = new GeneratedKeyHolder();
-            jdbcClient.sql("""
-                            INSERT INTO app_user (username, password_hash, display_name, enabled)
-                            VALUES (:username, :passwordHash, :displayName, TRUE)
-                            """)
-                    .param("username", username)
-                    .param("passwordHash", passwordEncoder.encode(request.password()))
-                    .param("displayName", displayName)
-                    .update(keyHolder, "id");
-            Number key = keyHolder.getKey();
-            if (key == null) throw new IllegalStateException(SystemText.ACCOUNT_KEY_MISSING.value());
-            return issueTokens(new User(key.longValue(), username, displayName, SystemText.EMPTY.value()));
+            long userId = authRepository.insertUser(
+                    username, passwordEncoder.encode(request.password()), displayName);
+            return issueTokens(new UserRow(userId, username, displayName, SystemText.EMPTY.value()));
         } catch (DuplicateKeyException exception) {
             throw ApiErrorCode.USERNAME_EXISTS.exception();
         }
@@ -100,17 +92,11 @@ public class AuthService {
     @Transactional
     public AuthResponse login(LoginRequest request) {
         String username = normalizeUsername(request.username());
-        User user = jdbcClient.sql("""
-                        SELECT id, username, display_name AS displayName, password_hash AS passwordHash
-                        FROM app_user
-                        WHERE username = :username AND enabled = TRUE
-                        """)
-                .param("username", username)
-                .query((resultSet, rowNumber) -> new User(resultSet.getLong("id"), resultSet.getString("username"),
-                        resultSet.getString("displayName"), resultSet.getString("passwordHash")))
-                .optional()
+        UserRow user = authRepository.findEnabledUserByUsername(username)
                 .orElseThrow(() -> invalidCredentials());
-        if (!passwordEncoder.matches(request.password(), user.passwordHash())) throw invalidCredentials();
+        if (!passwordEncoder.matches(request.password(), user.passwordHash())) {
+            throw invalidCredentials();
+        }
         return issueTokens(user.withoutPassword());
     }
 
@@ -126,21 +112,11 @@ public class AuthService {
     @Transactional
     public AuthResponse refresh(RefreshRequest request) {
         String tokenHash = hash(request.refreshToken());
-        RefreshRow refresh = jdbcClient.sql("""
-                        SELECT rt.id, rt.user_id AS userId, u.username, u.display_name AS displayName
-                        FROM auth_refresh_token rt
-                        JOIN app_user u ON u.id = rt.user_id AND u.enabled = TRUE
-                        WHERE rt.token_hash = :tokenHash
-                          AND rt.revoked_at IS NULL
-                          AND rt.expires_at > CURRENT_TIMESTAMP
-                        """)
-                .param("tokenHash", tokenHash)
-                .query(RefreshRow.class)
-                .optional()
+        RefreshTokenRow refresh = authRepository.findActiveRefreshToken(tokenHash)
                 .orElseThrow(ApiErrorCode.REFRESH_TOKEN_INVALID::exception);
-        jdbcClient.sql("UPDATE auth_refresh_token SET revoked_at = CURRENT_TIMESTAMP, last_used_at = CURRENT_TIMESTAMP WHERE id = :id")
-                .param("id", refresh.id()).update();
-        return issueTokens(new User(refresh.userId(), refresh.username(), refresh.displayName(), SystemText.EMPTY.value()));
+        authRepository.revokeRefreshToken(refresh.id());
+        return issueTokens(new UserRow(
+                refresh.userId(), refresh.username(), refresh.displayName(), SystemText.EMPTY.value()));
     }
 
     /**
@@ -152,9 +128,10 @@ public class AuthService {
      * @param request 可空的刷新请求
      */
     public void logout(RefreshRequest request) {
-        if (request == null || request.refreshToken() == null || request.refreshToken().isBlank()) return;
-        jdbcClient.sql("UPDATE auth_refresh_token SET revoked_at = CURRENT_TIMESTAMP WHERE token_hash = :tokenHash AND revoked_at IS NULL")
-                .param("tokenHash", hash(request.refreshToken())).update();
+        if (request == null || request.refreshToken() == null || request.refreshToken().isBlank()) {
+            return;
+        }
+        authRepository.revokeRefreshTokenByHash(hash(request.refreshToken()));
     }
 
     /**
@@ -164,10 +141,8 @@ public class AuthService {
      * @return 不含密码和令牌的用户资料
      */
     public UserProfile profile(Long userId) {
-        return jdbcClient.sql("SELECT id, username, display_name AS displayName FROM app_user WHERE id = :id AND enabled = TRUE")
-                .param("id", userId)
-                .query(UserProfile.class)
-                .optional()
+        return authRepository.findEnabledUserProfile(userId)
+                .map(row -> new UserProfile(row.id(), row.username(), row.displayName()))
                 .orElseThrow(ApiErrorCode.ACCOUNT_UNAVAILABLE::exception);
     }
 
@@ -180,7 +155,7 @@ public class AuthService {
      * @param user 不包含密码哈希的账号快照
      * @return 完整令牌响应
      */
-    private AuthResponse issueTokens(User user) {
+    private AuthResponse issueTokens(UserRow user) {
         Instant issuedAt = Instant.now();
         Instant accessExpiry = issuedAt.plusSeconds(BusinessRule.ACCESS_TOKEN_SECONDS.longValue());
         JwtClaimsSet claims = JwtClaimsSet.builder()
@@ -195,14 +170,7 @@ public class AuthService {
                 JwsHeader.with(MacAlgorithm.HS256).type(SystemText.JWT_TOKEN_TYPE.value()).build(), claims)).getTokenValue();
         String refreshToken = randomToken();
         Instant refreshExpiry = issuedAt.plus(BusinessRule.REFRESH_TOKEN_DAYS.longValue(), ChronoUnit.DAYS);
-        jdbcClient.sql("""
-                        INSERT INTO auth_refresh_token (user_id, token_hash, expires_at)
-                        VALUES (:userId, :tokenHash, :expiresAt)
-                        """)
-                .param("userId", user.id())
-                .param("tokenHash", hash(refreshToken))
-                .param("expiresAt", Timestamp.from(refreshExpiry))
-                .update();
+        authRepository.insertRefreshToken(user.id(), hash(refreshToken), Timestamp.from(refreshExpiry));
         return new AuthResponse(accessToken, refreshToken, BusinessRule.ACCESS_TOKEN_SECONDS.longValue(),
                 new UserProfile(user.id(), user.username(), user.displayName()));
     }
@@ -243,7 +211,9 @@ public class AuthService {
             byte[] digest = MessageDigest.getInstance(SystemText.HASH_ALGORITHM.value())
                     .digest(value.getBytes(StandardCharsets.UTF_8));
             StringBuilder result = new StringBuilder(BusinessRule.HASH_HEX_CAPACITY.value());
-            for (byte item : digest) result.append(String.format(SystemText.HASH_BYTE_FORMAT.value(), item));
+            for (byte item : digest) {
+                result.append(String.format(SystemText.HASH_BYTE_FORMAT.value(), item));
+            }
             return result.toString();
         } catch (NoSuchAlgorithmException exception) {
             throw new IllegalStateException("系统缺少 " + SystemText.HASH_ALGORITHM.value(), exception);
@@ -318,33 +288,4 @@ public class AuthService {
     public record UserProfile(Long id, String username, String displayName) {
     }
 
-    /**
-     * 保存鉴权查询使用的内部账号快照。
-     *
-     * @param id 用户主键
-     * @param username 登录名
-     * @param displayName 展示名称
-     * @param passwordHash BCrypt 哈希，仅登录校验时使用
-     */
-    private record User(Long id, String username, String displayName, String passwordHash) {
-        /**
-         * 创建不包含密码哈希的账号副本。
-         *
-         * @return 可用于令牌签发的安全账号快照
-         */
-        User withoutPassword() {
-            return new User(id, username, displayName, SystemText.EMPTY.value());
-        }
-    }
-
-    /**
-     * 保存刷新令牌查询返回的最小账号信息。
-     *
-     * @param id 刷新令牌记录主键
-     * @param userId 用户主键
-     * @param username 登录名
-     * @param displayName 展示名称
-     */
-    private record RefreshRow(Long id, Long userId, String username, String displayName) {
-    }
 }

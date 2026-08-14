@@ -29,6 +29,7 @@ import org.springframework.security.oauth2.jwt.NimbusJwtDecoder;
 import org.springframework.security.oauth2.jwt.NimbusJwtEncoder;
 
 import com.nimbusds.jose.jwk.source.ImmutableSecret;
+import com.wangzimin.now.repository.AuthRepository;
 
 class AuthServiceTest {
 
@@ -52,7 +53,8 @@ class AuthServiceTest {
         JwtEncoder jwtEncoder = new NimbusJwtEncoder(new ImmutableSecret<>(key));
         JwtDecoder jwtDecoder = NimbusJwtDecoder.withSecretKey(key).macAlgorithm(MacAlgorithm.HS256).build();
         PasswordEncoder passwordEncoder = new BCryptPasswordEncoder(4);
-        AuthService service = new AuthService(jdbcClient, passwordEncoder, jwtEncoder);
+        AuthService service = new AuthService(
+                new AuthRepository(jdbcClient), passwordEncoder, jwtEncoder);
 
         AuthService.AuthResponse response = service.register(
                 new AuthService.RegisterRequest("Test_User", "password123", "测试训练者"));

@@ -33,3 +33,11 @@
 - 验证通过后必须自动重启当前后端，不再等待用户确认。
 - 重启后必须实际验证 `/api/v1/health` 和本次修改涉及的接口，不能把“源码已修改”当作“运行态已更新”。
 - 数据库凭据只能通过进程环境变量使用，禁止写入源码、文档、Git、日志或命令输出。
+
+## 5. 分层与代码块规则
+
+- Controller 只负责 HTTP 映射和鉴权主体提取；Service 只负责业务规则、权限、事务和用例编排；Repository 负责 SQL、参数绑定、主键读取和数据库结果映射。
+- 任何名称以 `Service.java` 结尾的生产类不得导入或注入 `JdbcClient`，不得调用 `.sql(...)`，不得包含 `SELECT`、`INSERT`、`UPDATE`、`DELETE` 等 SQL 语句。
+- 项目统一使用 Spring `JdbcClient + Repository`；禁止在同一项目中保留未使用的 MyBatis、JPA 等持久化框架依赖。
+- Java 中的 `if`、`else`、`for`、`while`、`do`、`switch` 等控制语句必须显式使用大括号，即使代码块只有一行也不得省略。
+- 禁止 `if (condition) return;`、`if (condition) throw ...;`、`for (...) statement;` 等单行省略大括号写法；代码质量测试必须自动拦截。
