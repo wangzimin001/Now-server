@@ -35,6 +35,7 @@ class FitnessQueryServiceTest {
                 1L, "上肢力量", completedAt, 45, 5, 16, BigDecimal.valueOf(2400));
 
         when(jdbcClient.sql(anyString())).thenReturn(statement);
+        when(statement.param(anyString(), any())).thenReturn(statement);
         when(statement.param(anyString(), any(), anyInt())).thenReturn(statement);
         when(statement.query(WorkoutHistoryItem.class)).thenReturn(query);
         when(query.list()).thenReturn(List.of(expected));
@@ -46,10 +47,10 @@ class FitnessQueryServiceTest {
         verify(jdbcClient).sql(sqlCaptor.capture());
         String historySql = sqlCaptor.getValue();
         assertTrue(historySql.contains("COUNT(DISTINCT se.id) AS exerciseCount"));
-        assertTrue(historySql.contains("sr.status = 'COMPLETED'"));
+        assertTrue(historySql.contains("sr.status = :completedStatus"));
         assertTrue(historySql.contains("LEFT JOIN set_record sr"));
         assertTrue(historySql.contains("ws.owner_user_id = :userId"));
-        assertTrue(historySql.contains("LIMIT 200"));
+        assertTrue(historySql.contains("LIMIT :historyLimit"));
     }
 
     @Test
@@ -65,6 +66,7 @@ class FitnessQueryServiceTest {
         when(jdbcClient.sql(anyString())).thenReturn(planStatement, exerciseStatement);
         when(planStatement.param(anyString(), any(), anyInt())).thenReturn(planStatement);
         when(exerciseStatement.param(anyString(), any(), anyInt())).thenReturn(exerciseStatement);
+        when(planStatement.param(anyString(), any())).thenReturn(planStatement);
         when(planStatement.query(FitnessQueryService.WorkoutPlanRow.class)).thenReturn(planQuery);
         when(exerciseStatement.query(PlanExercise.class)).thenReturn(exerciseQuery);
         when(planQuery.list()).thenReturn(List.of(
@@ -87,7 +89,7 @@ class FitnessQueryServiceTest {
         String planSql = sqlCaptor.getAllValues().get(0);
         assertTrue(planSql.contains("COUNT(*) AS usage_count"));
         assertTrue(planSql.contains("MAX(ended_at) AS last_used_at"));
-        assertTrue(planSql.contains("WHERE status = 'COMPLETED'"));
+        assertTrue(planSql.contains("WHERE status = :completedStatus"));
         assertTrue(planSql.contains("GROUP BY plan_id"));
         assertTrue(planSql.contains("LEFT JOIN ("));
         assertTrue(planSql.contains("wp.owner_user_id IS NULL OR wp.owner_user_id = :userId"));
@@ -137,8 +139,8 @@ class FitnessQueryServiceTest {
         assertTrue(sql.contains("ws.owner_user_id = :userId"));
         assertTrue(sql.contains("PARTITION BY se.exercise_id"));
         assertTrue(sql.contains("ORDER BY ws.ended_at DESC, se.id DESC"));
-        assertTrue(sql.contains("completed_set.status = 'COMPLETED'"));
-        assertTrue(sql.contains("ranked.performanceRank = 1"));
-        assertTrue(sql.contains("sr.status = 'COMPLETED'"));
+        assertTrue(sql.contains("completed_set.status = :completedStatus"));
+        assertTrue(sql.contains("ranked.performanceRank = :latestRank"));
+        assertTrue(sql.contains("sr.status = :completedStatus"));
     }
 }

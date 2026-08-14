@@ -16,6 +16,7 @@ import java.util.stream.Stream;
 import com.wangzimin.now.service.FitnessQueryService;
 import com.wangzimin.now.service.FitnessQueryService.ExercisePageResponse;
 import com.wangzimin.now.service.FitnessQueryService.ExerciseResponse;
+import com.wangzimin.now.service.FitnessQueryService.ExerciseSubcategory;
 import com.wangzimin.now.service.FitnessQueryService.LatestExercisePerformance;
 import com.wangzimin.now.service.FitnessQueryService.LatestPerformanceSet;
 import com.wangzimin.now.service.FitnessQueryService.PlanExercise;
@@ -57,14 +58,15 @@ class FitnessControllerTest {
         WorkoutService workoutService = mock(WorkoutService.class);
         List<ExerciseResponse> expected = List.of(
                 new ExerciseResponse(100025L, "0025", "杠铃卧推", "barbell bench press", "chest", "胸部",
-                        List.of("中胸"), List.of(), "肱三头肌", "杠铃", "胸肌", "保持肩胛稳定。",
+                        List.of(new ExerciseSubcategory(2L, "middle-chest", "中胸")),
+                        "肱三头肌", "杠铃", "胸肌", "保持肩胛稳定。",
                         "/static/exercises/gifs/0025-EIeI8Vf.gif", "© Gym visual — https://gymvisual.com/"));
         ExercisePageResponse response = new ExercisePageResponse(expected, 1L, 1, 20, 1);
-        when(service.exercises("chest", "中胸", null, "卧推", 1, 20)).thenReturn(response);
+        when(service.exercises("chest", "middle-chest", "卧推", 1, 20)).thenReturn(response);
 
         FitnessController controller = new FitnessController(service, workoutService);
 
-        assertSame(response, controller.exercises("chest", "中胸", null, "卧推", 1, 20));
+        assertSame(response, controller.exercises("chest", "middle-chest", "卧推", 1, 20));
     }
 
     @Test

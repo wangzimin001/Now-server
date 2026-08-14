@@ -73,7 +73,7 @@ class WorkoutServiceTest {
 
         var sql = ArgumentCaptor.forClass(String.class);
         verify(jdbcClient).sql(sql.capture());
-        assertTrue(sql.getValue().contains("SET status = 'DELETED'"));
+        assertTrue(sql.getValue().contains("SET status = :deletedStatus"));
         assertTrue(sql.getValue().contains("owner_user_id = :userId"));
     }
 
