@@ -13,6 +13,7 @@ import com.wangzimin.now.service.FitnessQueryService.WorkoutPlanResponse;
 import com.wangzimin.now.service.WorkoutService;
 import com.wangzimin.now.service.WorkoutService.WorkoutCompletionRequest;
 import com.wangzimin.now.service.WorkoutService.WorkoutCompletionResponse;
+import com.wangzimin.now.service.WorkoutService.WorkoutHistoryUpdateRequest;
 import com.wangzimin.now.service.WorkoutService.WorkoutPlanRequest;
 
 import jakarta.validation.Valid;
@@ -115,6 +116,20 @@ public class FitnessController {
     @GetMapping("/workouts/history/{sessionId}")
     public WorkoutHistoryDetail historyDetail(@AuthenticationPrincipal Jwt jwt, @PathVariable Long sessionId) {
         return fitnessQueryService.historyDetail(sessionId, userId(jwt));
+    }
+
+    @PutMapping("/workouts/history/{sessionId}")
+    public WorkoutHistoryDetail updateHistoryDetail(@AuthenticationPrincipal Jwt jwt,
+            @PathVariable Long sessionId, @Valid @RequestBody WorkoutHistoryUpdateRequest request) {
+        Long userId = userId(jwt);
+        workoutService.updateWorkoutHistory(userId, sessionId, request);
+        return fitnessQueryService.historyDetail(sessionId, userId);
+    }
+
+    @DeleteMapping("/workouts/history/{sessionId}")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void deleteHistory(@AuthenticationPrincipal Jwt jwt, @PathVariable Long sessionId) {
+        workoutService.deleteWorkoutHistory(userId(jwt), sessionId);
     }
 
     @GetMapping("/workouts/latest-performance")

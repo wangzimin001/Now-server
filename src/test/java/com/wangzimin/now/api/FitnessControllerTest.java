@@ -20,11 +20,14 @@ import com.wangzimin.now.service.FitnessQueryService.LatestExercisePerformance;
 import com.wangzimin.now.service.FitnessQueryService.LatestPerformanceSet;
 import com.wangzimin.now.service.FitnessQueryService.PlanExercise;
 import com.wangzimin.now.service.FitnessQueryService.WorkoutHistoryItem;
+import com.wangzimin.now.service.FitnessQueryService.WorkoutHistoryDetail;
 import com.wangzimin.now.service.FitnessQueryService.WorkoutPlanResponse;
 import com.wangzimin.now.service.WorkoutService;
 import com.wangzimin.now.service.WorkoutService.PlanExerciseRequest;
 import com.wangzimin.now.service.WorkoutService.WorkoutCompletionRequest;
 import com.wangzimin.now.service.WorkoutService.WorkoutCompletionResponse;
+import com.wangzimin.now.service.WorkoutService.WorkoutHistoryExerciseUpdate;
+import com.wangzimin.now.service.WorkoutService.WorkoutHistoryUpdateRequest;
 import com.wangzimin.now.service.WorkoutService.WorkoutExerciseRequest;
 import com.wangzimin.now.service.WorkoutService.WorkoutPlanRequest;
 import com.wangzimin.now.service.WorkoutService.WorkoutSetRequest;
@@ -129,6 +132,27 @@ class FitnessControllerTest {
 
         assertSame(expected, controller.latestExercisePerformances(jwt, exerciseIds));
         verify(queryService).latestExercisePerformances(7L, exerciseIds);
+    }
+
+    @Test
+    void delegatesHistoryCorrectionAndDeletionForCurrentUser() {
+        FitnessQueryService queryService = mock(FitnessQueryService.class);
+        WorkoutService workoutService = mock(WorkoutService.class);
+        Jwt jwt = jwt(7L);
+        WorkoutHistoryUpdateRequest request = new WorkoutHistoryUpdateRequest(List.of(
+                new WorkoutHistoryExerciseUpdate(301L, List.of(
+                        new WorkoutSetRequest(1, BigDecimal.valueOf(62.5), 8, 95, true)))));
+        WorkoutHistoryDetail detail = new WorkoutHistoryDetail(
+                201L, "胸部训练", java.time.LocalDateTime.of(2026, 8, 14, 12, 0),
+                40, BigDecimal.valueOf(500), List.of());
+        when(queryService.historyDetail(201L, 7L)).thenReturn(detail);
+
+        FitnessController controller = new FitnessController(queryService, workoutService);
+
+        assertSame(detail, controller.updateHistoryDetail(jwt, 201L, request));
+        controller.deleteHistory(jwt, 201L);
+        verify(workoutService).updateWorkoutHistory(7L, 201L, request);
+        verify(workoutService).deleteWorkoutHistory(7L, 201L);
     }
 
     private Jwt jwt(Long userId) {

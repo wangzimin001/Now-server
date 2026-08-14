@@ -424,7 +424,8 @@ public class FitnessQueryService {
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "训练记录不存在"));
 
         List<WorkoutHistoryExercise> exercises = jdbcClient.sql("""
-                        SELECT se.id, se.exercise_name_snapshot AS name, se.exercise_order AS exerciseOrder,
+                        SELECT se.id, se.exercise_id AS exerciseId, se.exercise_name_snapshot AS name,
+                               se.exercise_order AS exerciseOrder,
                                sr.set_number AS setNumber, sr.weight_kg AS weightKg, sr.repetitions,
                                sr.rest_duration_seconds AS restDurationSeconds, sr.status, sr.completed_at AS completedAt
                         FROM session_exercise se
@@ -435,6 +436,7 @@ public class FitnessQueryService {
                 .param("sessionId", sessionId)
                 .query((resultSet, rowNumber) -> new HistorySetRow(
                         resultSet.getLong("id"),
+                        resultSet.getObject("exerciseId", Long.class),
                         resultSet.getString("name"),
                         resultSet.getInt("exerciseOrder"),
                         resultSet.getObject("setNumber", Integer.class),
@@ -459,7 +461,7 @@ public class FitnessQueryService {
                             .map(row -> new WorkoutSetDetail(row.setNumber(), row.weightKg(), row.repetitions(),
                                     row.restDurationSeconds(), row.status(), row.completedAt()))
                             .toList();
-                    return new WorkoutHistoryExercise(first.id(), first.name(), first.exerciseOrder(), sets);
+                    return new WorkoutHistoryExercise(first.id(), first.exerciseId(), first.name(), first.exerciseOrder(), sets);
                 })
                 .toList();
 
@@ -544,7 +546,7 @@ public class FitnessQueryService {
             Integer durationMinutes, BigDecimal totalVolumeKg) {
     }
 
-    private record HistorySetRow(Long id, String name, Integer exerciseOrder, Integer setNumber,
+    private record HistorySetRow(Long id, Long exerciseId, String name, Integer exerciseOrder, Integer setNumber,
             BigDecimal weightKg, Integer repetitions, Integer restDurationSeconds, String status,
             LocalDateTime completedAt) {
     }
@@ -636,7 +638,7 @@ public class FitnessQueryService {
             BigDecimal totalVolumeKg, List<WorkoutHistoryExercise> exercises) {
     }
 
-    public record WorkoutHistoryExercise(Long id, String name, Integer exerciseOrder,
+    public record WorkoutHistoryExercise(Long id, Long exerciseId, String name, Integer exerciseOrder,
             List<WorkoutSetDetail> sets) {
     }
 

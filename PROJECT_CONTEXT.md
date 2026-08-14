@@ -228,3 +228,9 @@ mvn test
 - 新增 `V19__repair_legacy_plan_exercise_links.sql`，把模板中的 8 个旧动作 ID 修复为 V4 动作库规范 ID；模板仍只保存动作 ID，GIF 始终由动作库关联查询，不向模板动作冗余存储图片地址。
 - 已完成 18 项自动化测试并重新打包、重启后端；`GET /api/v1/health` 返回 `UP`。
 - 已运行时验收 `GET /api/v1/workout-plans`：3 个系统模板共 11 个动作均已关联动作库规范 ID，缺失 GIF 数为 0。
+## 2026-08-14 训练历史纠错闭环
+
+- 新增 `PUT /api/v1/workouts/history/{sessionId}`：按当前账号校验训练及全部训练动作归属，在单个事务内重写组记录并重算 `total_volume_kg`；支持修改重量、次数、组间歇、完成状态以及增删组。
+- 新增 `DELETE /api/v1/workouts/history/{sessionId}`：按账号隔离将训练软删除为 `DELETED`，历史、趋势、最近表现和后续 PR 基线查询均只读取 `COMPLETED`，因此会自动排除已删除记录。
+- 历史详情动作新增动作库 `exerciseId`，同时保留 `session_exercise.id` 作为纠错更新定位键；模板与动作库数据不受影响。
+- Maven 20 项测试全部通过；后端已重新打包并重启，健康接口返回 `UP`。使用临时验收账号真实完成创建训练、读取详情、删减并修改组、容量重算、历史可见、软删除、详情 404 与历史移除全链路验收，临时账号及测试数据随后已清理。

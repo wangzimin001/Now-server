@@ -61,6 +61,23 @@ class WorkoutServiceTest {
     }
 
     @Test
+    void deletingWorkoutHistoryUsesOwnershipScopedSoftDelete() {
+        JdbcClient jdbcClient = mock(JdbcClient.class);
+        JdbcClient.StatementSpec statement = mock(JdbcClient.StatementSpec.class);
+        when(jdbcClient.sql(anyString())).thenReturn(statement);
+        when(statement.param(anyString(), any())).thenReturn(statement);
+        when(statement.param(anyString(), any(), any(Integer.class))).thenReturn(statement);
+        when(statement.update()).thenReturn(1);
+
+        new WorkoutService(jdbcClient).deleteWorkoutHistory(7L, 201L);
+
+        var sql = ArgumentCaptor.forClass(String.class);
+        verify(jdbcClient).sql(sql.capture());
+        assertTrue(sql.getValue().contains("SET status = 'DELETED'"));
+        assertTrue(sql.getValue().contains("owner_user_id = :userId"));
+    }
+
+    @Test
     @SuppressWarnings("unchecked")
     void detectsSixMeaningfulExerciseRecordsAgainstHistory() {
         JdbcClient jdbcClient = mock(JdbcClient.class);

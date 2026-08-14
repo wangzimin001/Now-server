@@ -201,6 +201,112 @@ public class WorkoutService {
         return new WorkoutCompletionResponse(sessionId, totalVolume, exerciseSummaries, comparison);
     }
 
+    @Transactional
+    public BigDecimal updateWorkoutHistory(Long userId, Long sessionId, WorkoutHistoryUpdateRequest request) {
+        int exerciseCount = jdbcClient.sql("""
+                        SELECT COUNT(*)
+                        FROM session_exercise se
+                        JOIN workout_session ws ON ws.id = se.session_id
+                        WHERE se.session_id = :sessionId AND ws.status = 'COMPLETED'
+                          AND ((:userId IS NULL AND ws.owner_user_id IS NULL) OR ws.owner_user_id = :userId)
+                        """)
+                .param("sessionId", sessionId)
+                .param("userId", userId, Types.BIGINT)
+                .query(Integer.class)
+                .single();
+        long distinctExerciseCount = request.exercises().stream()
+                .map(WorkoutHistoryExerciseUpdate::sessionExerciseId)
+                .distinct()
+                .count();
+        if (exerciseCount == 0) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "训练记录不存在");
+        }
+        if (distinctExerciseCount != exerciseCount || request.exercises().size() != exerciseCount) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "训练动作与原记录不一致");
+        }
+        int matchingExercises = jdbcClient.sql("""
+                        SELECT COUNT(*)
+                        FROM session_exercise
+                        WHERE session_id = :sessionId AND id IN (:exerciseIds)
+                        """)
+                .param("sessionId", sessionId)
+                .param("exerciseIds", request.exercises().stream()
+                        .map(WorkoutHistoryExerciseUpdate::sessionExerciseId).toList())
+                .query(Integer.class)
+                .single();
+        if (matchingExercises != exerciseCount) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "训练动作与原记录不一致");
+        }
+
+        int totalSetCount = request.exercises().stream().mapToInt(item -> item.sets().size()).sum();
+        if (totalSetCount == 0) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "至少保留一组训练记录");
+        }
+
+        jdbcClient.sql("""
+                        DELETE sr FROM set_record sr
+                        JOIN session_exercise se ON se.id = sr.session_exercise_id
+                        WHERE se.session_id = :sessionId
+                        """)
+                .param("sessionId", sessionId)
+                .update();
+
+        BigDecimal totalVolume = BigDecimal.ZERO;
+        for (WorkoutHistoryExerciseUpdate exercise : request.exercises()) {
+            for (int index = 0; index < exercise.sets().size(); index++) {
+                WorkoutSetRequest set = exercise.sets().get(index);
+                boolean completed = Boolean.TRUE.equals(set.completed());
+                if (completed) {
+                    totalVolume = totalVolume.add(set.weightKg().multiply(BigDecimal.valueOf(set.repetitions())));
+                }
+                jdbcClient.sql("""
+                                INSERT INTO set_record
+                                    (session_exercise_id, set_number, weight_kg, repetitions,
+                                     rest_duration_seconds, status, completed_at)
+                                SELECT :sessionExerciseId, :setNumber, :weightKg, :repetitions,
+                                       :restDurationSeconds, :status,
+                                       CASE WHEN :status = 'COMPLETED' THEN ws.ended_at ELSE NULL END
+                                FROM workout_session ws
+                                WHERE ws.id = :sessionId
+                                """)
+                        .param("sessionExerciseId", exercise.sessionExerciseId())
+                        .param("setNumber", index + 1)
+                        .param("weightKg", set.weightKg())
+                        .param("repetitions", set.repetitions())
+                        .param("restDurationSeconds", set.restDurationSeconds(), Types.INTEGER)
+                        .param("status", completed ? "COMPLETED" : "SKIPPED")
+                        .param("sessionId", sessionId)
+                        .update();
+            }
+        }
+
+        jdbcClient.sql("""
+                        UPDATE workout_session
+                        SET total_volume_kg = :totalVolume
+                        WHERE id = :sessionId
+                        """)
+                .param("totalVolume", totalVolume)
+                .param("sessionId", sessionId)
+                .update();
+        return totalVolume;
+    }
+
+    @Transactional
+    public void deleteWorkoutHistory(Long userId, Long sessionId) {
+        int changed = jdbcClient.sql("""
+                        UPDATE workout_session
+                        SET status = 'DELETED'
+                        WHERE id = :sessionId AND status = 'COMPLETED'
+                          AND ((:userId IS NULL AND owner_user_id IS NULL) OR owner_user_id = :userId)
+                        """)
+                .param("sessionId", sessionId)
+                .param("userId", userId, Types.BIGINT)
+                .update();
+        if (changed == 0) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "训练记录不存在");
+        }
+    }
+
     private WorkoutComparison compareWithPreviousWorkout(Long userId, WorkoutCompletionRequest request,
             BigDecimal totalVolume) {
         PreviousWorkout previous = jdbcClient.sql("""
@@ -559,6 +665,15 @@ public class WorkoutService {
             // 正向计时可超过模板预设，因此上限按最长训练会话的一天设置。
             @Min(0) @Max(86400) Integer restDurationSeconds,
             @NotNull Boolean completed) {
+    }
+
+    public record WorkoutHistoryUpdateRequest(
+            @NotNull @Size(min = 1, max = 100) List<@Valid WorkoutHistoryExerciseUpdate> exercises) {
+    }
+
+    public record WorkoutHistoryExerciseUpdate(
+            @NotNull @Positive Long sessionExerciseId,
+            @NotNull @Size(max = 50) List<@Valid WorkoutSetRequest> sets) {
     }
 
     private record ExistingWorkout(Long id, BigDecimal totalVolumeKg) {
