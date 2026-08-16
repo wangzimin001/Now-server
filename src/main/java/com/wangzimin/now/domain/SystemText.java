@@ -26,12 +26,41 @@ public enum SystemText {
     HEALTH_UP("UP"),
     REQUEST_FAILED("请求未能完成"),
     ACCOUNT_KEY_MISSING("创建账号后未返回主键"),
+    FRIEND_REQUEST_KEY_MISSING("创建好友申请后未返回主键"),
+    CONVERSATION_KEY_MISSING("创建会话后未返回主键"),
+    MESSAGE_KEY_MISSING("保存消息后未返回主键"),
+    ATTACHMENT_KEY_MISSING("保存附件后未返回主键"),
+    POST_KEY_MISSING("发布朋友圈后未返回主键"),
+    COMMENT_KEY_MISSING("保存评论后未返回主键"),
     PLAN_KEY_MISSING("创建训练模板后未返回主键"),
     WORKOUT_KEY_MISSING("保存训练后未返回主键"),
     SESSION_EXERCISE_KEY_MISSING("保存训练动作后未返回主键"),
     TRAINING_CONFIG_UNREADABLE("训练配置保存后无法读取"),
     TRAINING_CONFIG_JSON_CORRUPTED("训练配置 JSON 无法解析"),
-    JWT_SECRET_TOO_SHORT("AUTH_JWT_SECRET 长度未达到安全规则");
+    JWT_SECRET_TOO_SHORT("AUTH_JWT_SECRET 长度未达到安全规则"),
+    PUBLIC_ID_PREFIX("N"),
+    PUBLIC_ID_ALPHABET("23456789ABCDEFGHJKLMNPQRSTUVWXYZ"),
+    IMAGE_MIME_PREFIX("image/"),
+    VIDEO_MIME_PREFIX("video/"),
+    ISO_BASE_MEDIA_SIGNATURE("ftyp"),
+    BYTE_RANGE_UNIT("bytes"),
+    JPEG_FORMAT("jpg"),
+    JPEG_MIME_TYPE("image/jpeg"),
+    VIDEO_POSTER_SUFFIX(".poster.jpg"),
+    SOCIAL_POSTER_ROUTE_SUFFIX("/poster"),
+    PUBLIC_CACHE_ONE_DAY("public, max-age=86400"),
+    BINARY_MIME_TYPE("application/octet-stream"),
+    SOCIAL_UPLOAD_DIRECTORY("uploads/social"),
+    SOCIAL_FILE_ROUTE("/api/v1/social/files/"),
+    SOCIAL_FILE_FIELD("file"),
+    FILE_NAME_FALLBACK("file"),
+    GROUP_DEFAULT_NAME("训练群聊"),
+    MESSAGE_DELETED("消息已删除"),
+    SYSTEM_MEMBER_JOINED("加入了群聊"),
+    SYSTEM_MEMBER_LEFT("退出了群聊"),
+    SYSTEM_MEMBER_REMOVED("被移出群聊");
+
+    public static final String SOCIAL_UPLOAD_CONFIG = "${social.upload.directory:uploads/social}";
 
     private final String value;
 

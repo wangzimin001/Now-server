@@ -15,10 +15,12 @@ import java.util.Map;
 import com.wangzimin.now.domain.ApiErrorCode;
 import com.wangzimin.now.domain.BusinessRule;
 import com.wangzimin.now.domain.DashboardMetricDefinition;
+import com.wangzimin.now.domain.EffortRule;
 import com.wangzimin.now.domain.ExerciseSource;
 import com.wangzimin.now.domain.SystemText;
 import com.wangzimin.now.domain.WeekState;
 import com.wangzimin.now.domain.WeekDayDefinition;
+import com.wangzimin.now.domain.WorkoutSetType;
 import com.wangzimin.now.domain.WorkoutStatus;
 
 import org.springframework.jdbc.core.simple.JdbcClient;
@@ -177,8 +179,23 @@ public class FitnessQueryRepository {
 
         List<PlanExercise> planExercises = jdbcClient.sql("""
                         SELECT pe.plan_id AS planId, e.id, e.name, e.muscle_group AS muscleGroup,
+                               COALESCE(
+                                   (
+                                       SELECT subcategory.name
+                                       FROM exercise_subcategory_mapping mapping
+                                       JOIN exercise_subcategory subcategory
+                                         ON subcategory.id = mapping.subcategory_id
+                                        AND subcategory.is_active = TRUE
+                                       WHERE mapping.exercise_id = e.id
+                                       ORDER BY subcategory.sort_order, subcategory.id
+                                       LIMIT 1
+                                   ),
+                                   primary_category.name
+                               ) AS subcategoryLabel,
                                pe.target_sets AS targetSets, pe.target_reps AS targetReps,
                                pe.rest_seconds AS restSeconds,
+                               pe.progressive_overload_enabled AS progressiveOverloadEnabled,
+                               pe.replacement_progressive_overload_enabled AS replacementProgressiveOverloadEnabled,
                                COALESCE(
                                    NULLIF(e.gif_url, ''),
                                    (
@@ -190,9 +207,41 @@ public class FitnessQueryRepository {
                                        ORDER BY gif_candidate.id DESC
                                        LIMIT 1
                                    )
-                               ) AS gifUrl
+                               ) AS gifUrl,
+                               alternative.id AS replacementExerciseId,
+                               alternative.name AS replacementExerciseName,
+                               alternative.muscle_group AS replacementExerciseMuscleGroup,
+                               COALESCE(
+                                   (
+                                       SELECT replacement_subcategory.name
+                                       FROM exercise_subcategory_mapping replacement_mapping
+                                       JOIN exercise_subcategory replacement_subcategory
+                                         ON replacement_subcategory.id = replacement_mapping.subcategory_id
+                                        AND replacement_subcategory.is_active = TRUE
+                                       WHERE replacement_mapping.exercise_id = alternative.id
+                                       ORDER BY replacement_subcategory.sort_order, replacement_subcategory.id
+                                       LIMIT 1
+                                   ),
+                                   replacement_category.name
+                               ) AS replacementExerciseSubcategoryLabel,
+                               COALESCE(
+                                   NULLIF(alternative.gif_url, ''),
+                                   (
+                                       SELECT replacement_gif.gif_url
+                                       FROM exercise replacement_gif
+                                       WHERE replacement_gif.name = alternative.name
+                                         AND replacement_gif.gif_url IS NOT NULL
+                                         AND replacement_gif.gif_url <> ''
+                                       ORDER BY replacement_gif.id DESC
+                                       LIMIT 1
+                                   )
+                               ) AS replacementExerciseGifUrl
                         FROM plan_exercise pe
                         JOIN exercise e ON e.id = pe.exercise_id
+                        JOIN exercise_category primary_category ON primary_category.code = e.category_code
+                        LEFT JOIN exercise alternative ON alternative.id = pe.replacement_exercise_id
+                        LEFT JOIN exercise_category replacement_category
+                          ON replacement_category.code = alternative.category_code
                         JOIN workout_plan wp ON wp.id = pe.plan_id
                         WHERE wp.is_active = TRUE
                           AND (wp.owner_user_id IS NULL OR wp.owner_user_id = :userId)
@@ -351,7 +400,7 @@ public class FitnessQueryRepository {
 
         int totalPages = total == BusinessRule.ZERO_COUNT.value()
                 ? BusinessRule.ZERO_COUNT.value()
-                : (int) Math.ceil((double) total / safeLimit);
+                : Math.toIntExact((total + safeLimit - BusinessRule.COLLECTION_MIN_SIZE.longValue()) / safeLimit);
         return new ExercisePageResponse(data, total, safePage, safeLimit, totalPages);
     }
 
@@ -519,7 +568,8 @@ public class FitnessQueryRepository {
         List<WorkoutHistoryExercise> exercises = jdbcClient.sql("""
                         SELECT se.id, se.exercise_id AS exerciseId, se.exercise_name_snapshot AS name,
                                se.exercise_order AS exerciseOrder,
-                               sr.set_number AS setNumber, sr.weight_kg AS weightKg, sr.repetitions,
+                               sr.set_number AS setNumber, sr.set_type AS setType,
+                               sr.weight_kg AS weightKg, sr.repetitions, sr.rpe,
                                sr.rest_duration_seconds AS restDurationSeconds, sr.status, sr.completed_at AS completedAt
                         FROM session_exercise se
                         LEFT JOIN set_record sr ON sr.session_exercise_id = se.id
@@ -533,8 +583,10 @@ public class FitnessQueryRepository {
                         resultSet.getString("name"),
                         resultSet.getInt("exerciseOrder"),
                         resultSet.getObject("setNumber", Integer.class),
+                        resultSet.getString("setType"),
                         resultSet.getBigDecimal("weightKg"),
                         resultSet.getObject("repetitions", Integer.class),
+                        resultSet.getBigDecimal("rpe"),
                         resultSet.getObject("restDurationSeconds", Integer.class),
                         resultSet.getString("status"),
                         resultSet.getTimestamp("completedAt") == null ? null
@@ -551,8 +603,11 @@ public class FitnessQueryRepository {
                     HistorySetRow first = rows.get(0);
                     List<WorkoutSetDetail> sets = rows.stream()
                             .filter(row -> row.setNumber() != null)
-                            .map(row -> new WorkoutSetDetail(row.setNumber(), row.weightKg(), row.repetitions(),
-                                    row.restDurationSeconds(), row.status(), row.completedAt()))
+                            .map(row -> new WorkoutSetDetail(row.setNumber(),
+                                    WorkoutSetType.fromDatabaseValue(row.setType()),
+                                    row.weightKg(), row.repetitions(),
+                                    row.restDurationSeconds(), EffortRule.toRepsInReserve(row.rpe()),
+                                    row.status(), row.completedAt()))
                             .toList();
                     return new WorkoutHistoryExercise(first.id(), first.exerciseId(), first.name(), first.exerciseOrder(), sets);
                 })
@@ -565,8 +620,9 @@ public class FitnessQueryRepository {
     /**
      * 批量查询当前用户多个动作的最近训练表现。
      *
-     * <p>输入先去空、去重并限制数量；窗口函数为每个动作选择最近一次包含完成组的训练，
-     * 随后返回该次训练的所有完成组，避免客户端逐动作发送请求。</p>
+     * <p>输入先去空、去重并限制数量；窗口函数为每个动作选择最近两次包含完成组的训练。
+     * 顶层字段继续表示最近一次，recentPerformances 则为谨慎渐进判断提供连续证据，
+     * 避免客户端逐动作发送请求或根据单次表现直接加重。</p>
      *
      * @param userId 当前账号主键
      * @param exerciseIds 待查询动作主键集合
@@ -602,17 +658,19 @@ public class FitnessQueryRepository {
                                     AND completed_set.status = :completedStatus
                               )
                         )
-                        SELECT ranked.exerciseId, ranked.completedAt,
-                               sr.set_number AS setNumber, sr.weight_kg AS weightKg, sr.repetitions
+                        SELECT ranked.sessionExerciseId, ranked.exerciseId, ranked.completedAt,
+                               ranked.performanceRank,
+                               sr.set_number AS setNumber, sr.set_type AS setType,
+                               sr.weight_kg AS weightKg, sr.repetitions, sr.rpe
                         FROM ranked_exercise ranked
                         JOIN set_record sr ON sr.session_exercise_id = ranked.sessionExerciseId
-                        WHERE ranked.performanceRank = :latestRank AND sr.status = :completedStatus
-                        ORDER BY ranked.exerciseId, sr.set_number
+                        WHERE ranked.performanceRank <= :recentLimit AND sr.status = :completedStatus
+                        ORDER BY ranked.exerciseId, ranked.performanceRank, sr.set_number
                         """)
                 .param("userId", userId)
                 .param("exerciseIds", normalizedIds)
                 .param("completedStatus", WorkoutStatus.COMPLETED.databaseValue())
-                .param("latestRank", BusinessRule.EXERCISE_DEFAULT_PAGE.value())
+                .param("recentLimit", EffortRule.RECENT_PERFORMANCE_SESSION_LIMIT.value())
                 .query(LatestPerformanceSetRow.class)
                 .list();
 
@@ -625,12 +683,117 @@ public class FitnessQueryRepository {
                 .stream()
                 .map(exerciseRows -> {
                     LatestPerformanceSetRow first = exerciseRows.get(BusinessRule.ZERO_COUNT.value());
-                    List<LatestPerformanceSet> sets = exerciseRows.stream()
-                            .map(row -> new LatestPerformanceSet(row.setNumber(), row.weightKg(), row.repetitions()))
+                    List<ExercisePerformanceSession> recentPerformances = exerciseRows.stream()
+                            .collect(java.util.stream.Collectors.groupingBy(
+                                    LatestPerformanceSetRow::sessionExerciseId,
+                                    LinkedHashMap::new,
+                                    java.util.stream.Collectors.toList()))
+                            .values()
+                            .stream()
+                            .map(sessionRows -> new ExercisePerformanceSession(
+                                    sessionRows.get(BusinessRule.ZERO_COUNT.value()).completedAt(),
+                                    sessionRows.stream()
+                                             .map(row -> new LatestPerformanceSet(row.setNumber(), row.weightKg(),
+                                                     row.repetitions(), EffortRule.toRepsInReserve(row.rpe()),
+                                                     WorkoutSetType.fromDatabaseValue(row.setType())))
+                                            .toList()))
                             .toList();
-                    return new LatestExercisePerformance(first.exerciseId(), first.completedAt(), sets);
+                    ExercisePerformanceSession latest = recentPerformances.get(BusinessRule.ZERO_COUNT.value());
+                    return new LatestExercisePerformance(first.exerciseId(), latest.completedAt(), latest.sets(),
+                            recentPerformances);
                 })
                 .toList();
+    }
+
+    /**
+     * 查询当前账号中一个动作的成长历史。
+     *
+     * <p>单条 SQL 以动作表为主表，即使账号尚无训练也会返回动作元数据；
+     * 窗口函数只保留最近的完成训练，并且只装配完成组，避免跳过组影响曲线。</p>
+     *
+     * @param userId 当前账号主键
+     * @param exerciseId 动作库主键
+     * @return 动作资料与按时间倒序排列的训练表现
+     */
+    public ExerciseProgressResponse exerciseProgress(Long userId, Long exerciseId) {
+        if (exerciseId == null || exerciseId <= BusinessRule.ZERO_COUNT.value()) {
+            throw ApiErrorCode.EXERCISE_NOT_FOUND.exception();
+        }
+
+        List<ExerciseProgressRow> rows = jdbcClient.sql("""
+                        WITH ranked_exercise AS (
+                            SELECT se.id AS sessionExerciseId, se.exercise_id AS exerciseId,
+                                   ws.id AS sessionId, ws.name_snapshot AS workoutName, ws.ended_at AS completedAt,
+                                   ROW_NUMBER() OVER (
+                                       ORDER BY ws.ended_at DESC, se.id DESC
+                                   ) AS performanceRank
+                            FROM session_exercise se
+                            JOIN workout_session ws ON ws.id = se.session_id
+                            WHERE se.exercise_id = :exerciseId
+                              AND ws.owner_user_id = :userId
+                              AND ws.status = :completedStatus
+                              AND EXISTS (
+                                  SELECT 1 FROM set_record completed_set
+                                  WHERE completed_set.session_exercise_id = se.id
+                                    AND completed_set.status = :completedStatus
+                                    AND completed_set.set_type = :standardSetType
+                              )
+                        )
+                        SELECT e.id AS exerciseId, e.name, e.muscle_group AS muscleGroup,
+                               e.equipment, e.target_name AS targetName, e.gif_url AS gifUrl,
+                               e.attribution,
+                               ranked.sessionId, ranked.sessionExerciseId, ranked.workoutName,
+                               ranked.completedAt, ranked.performanceRank,
+                               sr.set_number AS setNumber, sr.set_type AS setType,
+                               sr.weight_kg AS weightKg,
+                               sr.repetitions, sr.rpe
+                        FROM exercise e
+                        LEFT JOIN ranked_exercise ranked
+                               ON ranked.exerciseId = e.id
+                              AND ranked.performanceRank <= :historyLimit
+                        LEFT JOIN set_record sr
+                               ON sr.session_exercise_id = ranked.sessionExerciseId
+                              AND sr.status = :completedStatus
+                              AND sr.set_type = :standardSetType
+                        WHERE e.id = :exerciseId
+                        ORDER BY ranked.completedAt DESC, ranked.sessionExerciseId DESC, sr.set_number
+                        """)
+                .param("exerciseId", exerciseId)
+                .param("userId", userId, Types.BIGINT)
+                .param("completedStatus", WorkoutStatus.COMPLETED.databaseValue())
+                .param("standardSetType", WorkoutSetType.STANDARD.databaseValue())
+                .param("historyLimit", BusinessRule.EXERCISE_PROGRESS_SESSION_LIMIT.value())
+                .query(ExerciseProgressRow.class)
+                .list();
+
+        if (rows.isEmpty()) {
+            throw ApiErrorCode.EXERCISE_NOT_FOUND.exception();
+        }
+
+        ExerciseProgressRow first = rows.get(BusinessRule.ZERO_COUNT.value());
+        List<ExerciseProgressSession> sessions = rows.stream()
+                .filter(row -> row.sessionId() != null)
+                .collect(java.util.stream.Collectors.groupingBy(
+                        ExerciseProgressRow::sessionExerciseId,
+                        LinkedHashMap::new,
+                        java.util.stream.Collectors.toList()))
+                .values()
+                .stream()
+                .map(sessionRows -> {
+                    ExerciseProgressRow session = sessionRows.get(BusinessRule.ZERO_COUNT.value());
+                    List<LatestPerformanceSet> sets = sessionRows.stream()
+                            .filter(row -> row.setNumber() != null)
+                            .map(row -> new LatestPerformanceSet(row.setNumber(), row.weightKg(),
+                                    row.repetitions(), EffortRule.toRepsInReserve(row.rpe()),
+                                    WorkoutSetType.fromDatabaseValue(row.setType())))
+                            .toList();
+                    return new ExerciseProgressSession(session.sessionId(), session.workoutName(),
+                            session.completedAt(), sets);
+                })
+                .toList();
+
+        return new ExerciseProgressResponse(first.exerciseId(), first.name(), first.muscleGroup(),
+                first.equipment(), first.targetName(), first.gifUrl(), first.attribution(), sessions);
     }
 
     /**
@@ -684,21 +847,67 @@ public class FitnessQueryRepository {
      * <p>setNumber 可为空，用于表达尚无组记录但仍需返回的动作。</p>
      */
     private record HistorySetRow(Long id, Long exerciseId, String name, Integer exerciseOrder, Integer setNumber,
-            BigDecimal weightKg, Integer repetitions, Integer restDurationSeconds, String status,
+            String setType,
+            BigDecimal weightKg, Integer repetitions, BigDecimal rpe, Integer restDurationSeconds, String status,
             LocalDateTime completedAt) {
     }
 
     /**
      * 保存最近表现查询中的一组数据。
      *
+     * @param sessionExerciseId 会话动作主键，用于把同一次训练的组重新聚合
      * @param exerciseId 动作主键
      * @param completedAt 训练完成时间
+     * @param performanceRank 该动作按完成时间倒序的训练名次
      * @param setNumber 组序号
+     * @param setType 组类型数据库值
      * @param weightKg 重量
      * @param repetitions 次数
+     * @param rpe 数据库存储的主观用力程度
      */
-    private record LatestPerformanceSetRow(Long exerciseId, LocalDateTime completedAt, Integer setNumber,
-            BigDecimal weightKg, Integer repetitions) {
+    private record LatestPerformanceSetRow(Long sessionExerciseId, Long exerciseId, LocalDateTime completedAt,
+            Integer performanceRank, Integer setNumber, String setType, BigDecimal weightKg,
+            Integer repetitions, BigDecimal rpe) {
+    }
+
+    /**
+     * 保存动作成长查询中的动作、训练与组联合行。
+     *
+     * <p>sessionId 及组字段允许为空，用于表达动作存在但当前账号没有完成记录。</p>
+     */
+    public record ExerciseProgressRow(Long exerciseId, String name, String muscleGroup, String equipment,
+            String targetName, String gifUrl, String attribution, Long sessionId, Long sessionExerciseId,
+            String workoutName, LocalDateTime completedAt, Integer performanceRank, Integer setNumber,
+            String setType, BigDecimal weightKg, Integer repetitions, BigDecimal rpe) {
+
+        /**
+         * 兼容尚未包含组类型的成长查询测试与内部构造调用。
+         *
+         * @param exerciseId 动作主键
+         * @param name 动作名称
+         * @param muscleGroup 辅助肌群
+         * @param equipment 器械
+         * @param targetName 主要目标肌群
+         * @param gifUrl 动作动画地址
+         * @param attribution 媒体署名
+         * @param sessionId 训练会话主键
+         * @param sessionExerciseId 会话动作主键
+         * @param workoutName 训练名称
+         * @param completedAt 完成时间
+         * @param performanceRank 训练倒序名次
+         * @param setNumber 组序号
+         * @param weightKg 重量
+         * @param repetitions 次数
+         * @param rpe 主观用力程度
+         */
+        public ExerciseProgressRow(Long exerciseId, String name, String muscleGroup, String equipment,
+                String targetName, String gifUrl, String attribution, Long sessionId, Long sessionExerciseId,
+                String workoutName, LocalDateTime completedAt, Integer performanceRank, Integer setNumber,
+                BigDecimal weightKg, Integer repetitions, BigDecimal rpe) {
+            this(exerciseId, name, muscleGroup, equipment, targetName, gifUrl, attribution,
+                    sessionId, sessionExerciseId, workoutName, completedAt, performanceRank, setNumber,
+                    WorkoutSetType.STANDARD.databaseValue(), weightKg, repetitions, rpe);
+        }
     }
 
     /**
@@ -854,13 +1063,92 @@ public class FitnessQueryRepository {
      * @param id 动作主键
      * @param name 动作名称
      * @param muscleGroup 辅助肌群
+     * @param subcategoryLabel 数据库主二级分类名称；未分类时回退一级分类
      * @param targetSets 目标组数
      * @param targetReps 目标次数
      * @param restSeconds 预设休息秒数
+     * @param progressiveOverloadEnabled 是否为该动作开启渐进超负荷
      * @param gifUrl 动作动画地址
+     * @param replacementExerciseId 可空的替换动作主键
+     * @param replacementExerciseName 替换动作名称
+     * @param replacementExerciseMuscleGroup 替换动作辅助肌群
+     * @param replacementExerciseSubcategoryLabel 替换动作数据库主二级分类名称
+     * @param replacementExerciseGifUrl 替换动作动画地址
+     * @param replacementProgressiveOverloadEnabled 是否为替换动作开启渐进超负荷
      */
-    public record PlanExercise(Long planId, Long id, String name, String muscleGroup, Integer targetSets,
-            Integer targetReps, Integer restSeconds, String gifUrl) {
+    public record PlanExercise(Long planId, Long id, String name, String muscleGroup, String subcategoryLabel,
+            Integer targetSets,
+            Integer targetReps, Integer restSeconds, Boolean progressiveOverloadEnabled, String gifUrl,
+            Long replacementExerciseId, String replacementExerciseName,
+            String replacementExerciseMuscleGroup, String replacementExerciseSubcategoryLabel,
+            String replacementExerciseGifUrl,
+            Boolean replacementProgressiveOverloadEnabled) {
+
+        /**
+         * 兼容尚未返回二级分类名称的完整模板动作构造调用。
+         *
+         * @param planId 模板主键
+         * @param id 动作主键
+         * @param name 动作名称
+         * @param muscleGroup 辅助肌群
+         * @param targetSets 目标组数
+         * @param targetReps 目标次数
+         * @param restSeconds 预设休息秒数
+         * @param progressiveOverloadEnabled 是否开启渐进超负荷
+         * @param gifUrl 动作动画地址
+         * @param replacementExerciseId 替换动作主键
+         * @param replacementExerciseName 替换动作名称
+         * @param replacementExerciseMuscleGroup 替换动作辅助肌群
+         * @param replacementExerciseGifUrl 替换动作动画地址
+         * @param replacementProgressiveOverloadEnabled 替换动作是否开启渐进超负荷
+         */
+        public PlanExercise(Long planId, Long id, String name, String muscleGroup, Integer targetSets,
+                Integer targetReps, Integer restSeconds, Boolean progressiveOverloadEnabled, String gifUrl,
+                Long replacementExerciseId, String replacementExerciseName,
+                String replacementExerciseMuscleGroup, String replacementExerciseGifUrl,
+                Boolean replacementProgressiveOverloadEnabled) {
+            this(planId, id, name, muscleGroup, null, targetSets, targetReps, restSeconds,
+                    progressiveOverloadEnabled, gifUrl, replacementExerciseId, replacementExerciseName,
+                    replacementExerciseMuscleGroup, null, replacementExerciseGifUrl,
+                    replacementProgressiveOverloadEnabled);
+        }
+
+        /**
+         * 构造旧调用兼容的模板动作；未提供开关时默认关闭。
+         *
+         * @param planId 模板主键
+         * @param id 动作主键
+         * @param name 动作名称
+         * @param muscleGroup 辅助肌群
+         * @param targetSets 目标组数
+         * @param targetReps 目标次数
+         * @param restSeconds 预设休息秒数
+         * @param gifUrl 动作动画地址
+         */
+        public PlanExercise(Long planId, Long id, String name, String muscleGroup, Integer targetSets,
+                Integer targetReps, Integer restSeconds, String gifUrl) {
+            this(planId, id, name, muscleGroup, null, targetSets, targetReps, restSeconds, false, gifUrl,
+                    null, null, null, null, null, false);
+        }
+
+        /**
+         * 构造未包含替换动作的兼容模板动作。
+         *
+         * @param planId 模板主键
+         * @param id 动作主键
+         * @param name 动作名称
+         * @param muscleGroup 辅助肌群
+         * @param targetSets 目标组数
+         * @param targetReps 目标次数
+         * @param restSeconds 预设休息秒数
+         * @param progressiveOverloadEnabled 是否开启渐进超负荷
+         * @param gifUrl 动作动画地址
+         */
+        public PlanExercise(Long planId, Long id, String name, String muscleGroup, Integer targetSets,
+                Integer targetReps, Integer restSeconds, Boolean progressiveOverloadEnabled, String gifUrl) {
+            this(planId, id, name, muscleGroup, null, targetSets, targetReps, restSeconds,
+                    progressiveOverloadEnabled, gifUrl, null, null, null, null, null, false);
+        }
 
         /**
          * 构造没有动画字段的兼容模板动作。
@@ -869,7 +1157,8 @@ public class FitnessQueryRepository {
          */
         public PlanExercise(Long planId, Long id, String name, String muscleGroup, Integer targetSets,
                 Integer targetReps, Integer restSeconds) {
-            this(planId, id, name, muscleGroup, targetSets, targetReps, restSeconds, null);
+            this(planId, id, name, muscleGroup, null, targetSets, targetReps, restSeconds, false, null,
+                    null, null, null, null, null, false);
         }
     }
 
@@ -977,14 +1266,16 @@ public class FitnessQueryRepository {
      * 描述历史训练中的一个组记录。
      *
      * @param setNumber 组序号
+     * @param setType 训练组用途
      * @param weightKg 重量
      * @param repetitions 次数
      * @param restDurationSeconds 实际组间歇
+     * @param repsInReserve 完成后估计还能标准完成的次数
      * @param status 组状态
      * @param completedAt 完成时间
      */
-    public record WorkoutSetDetail(Integer setNumber, BigDecimal weightKg, Integer repetitions,
-            Integer restDurationSeconds, String status, LocalDateTime completedAt) {
+    public record WorkoutSetDetail(Integer setNumber, WorkoutSetType setType, BigDecimal weightKg, Integer repetitions,
+            Integer restDurationSeconds, Integer repsInReserve, String status, LocalDateTime completedAt) {
     }
 
     /**
@@ -993,9 +1284,31 @@ public class FitnessQueryRepository {
      * @param exerciseId 动作主键
      * @param completedAt 最近训练完成时间
      * @param sets 该次训练的所有完成组
+     * @param recentPerformances 从近到远排列的两次完整表现
      */
     public record LatestExercisePerformance(Long exerciseId, LocalDateTime completedAt,
-            List<LatestPerformanceSet> sets) {
+            List<LatestPerformanceSet> sets, List<ExercisePerformanceSession> recentPerformances) {
+
+        /**
+         * 兼容只提供最近一次表现的内部调用。
+         *
+         * @param exerciseId 动作主键
+         * @param completedAt 最近训练完成时间
+         * @param sets 最近一次完成组
+         */
+        public LatestExercisePerformance(Long exerciseId, LocalDateTime completedAt,
+                List<LatestPerformanceSet> sets) {
+            this(exerciseId, completedAt, sets, List.of(new ExercisePerformanceSession(completedAt, sets)));
+        }
+    }
+
+    /**
+     * 描述同一动作在一次训练中的完整完成组，用于连续表现判断。
+     *
+     * @param completedAt 该次训练完成时间
+     * @param sets 该次训练的有序完成组
+     */
+    public record ExercisePerformanceSession(LocalDateTime completedAt, List<LatestPerformanceSet> sets) {
     }
 
     /**
@@ -1004,8 +1317,64 @@ public class FitnessQueryRepository {
      * @param setNumber 组序号
      * @param weightKg 重量
      * @param repetitions 次数
+     * @param repsInReserve 完成后估计还能标准完成的次数
+     * @param setType 训练组用途
      */
-    public record LatestPerformanceSet(Integer setNumber, BigDecimal weightKg, Integer repetitions) {
+    public record LatestPerformanceSet(Integer setNumber, BigDecimal weightKg, Integer repetitions,
+            Integer repsInReserve, WorkoutSetType setType) {
+
+        /**
+         * 兼容已包含 RIR 但尚无组类型的内部调用。
+         *
+         * @param setNumber 组序号
+         * @param weightKg 重量
+         * @param repetitions 次数
+         * @param repsInReserve 完成后估计还能标准完成的次数
+         */
+        public LatestPerformanceSet(Integer setNumber, BigDecimal weightKg, Integer repetitions,
+                Integer repsInReserve) {
+            this(setNumber, weightKg, repetitions, repsInReserve, WorkoutSetType.STANDARD);
+        }
+
+        /**
+         * 兼容没有 RIR 的历史数据和内部调用。
+         *
+         * @param setNumber 组序号
+         * @param weightKg 重量
+         * @param repetitions 次数
+         */
+        public LatestPerformanceSet(Integer setNumber, BigDecimal weightKg, Integer repetitions) {
+            this(setNumber, weightKg, repetitions, null, WorkoutSetType.STANDARD);
+        }
+    }
+
+    /**
+     * 描述一个动作的成长页完整响应。
+     *
+     * @param exerciseId 动作库主键
+     * @param name 动作中文名称
+     * @param muscleGroup 辅助肌群
+     * @param equipment 所需器械
+     * @param targetName 主要目标肌群
+     * @param gifUrl 动作演示地址
+     * @param attribution 演示媒体署名
+     * @param sessions 最近完成训练，按完成时间从近到远排列
+     */
+    public record ExerciseProgressResponse(Long exerciseId, String name, String muscleGroup,
+            String equipment, String targetName, String gifUrl, String attribution,
+            List<ExerciseProgressSession> sessions) {
+    }
+
+    /**
+     * 描述成长历史中的一次完成训练。
+     *
+     * @param sessionId 训练会话主键
+     * @param workoutName 训练名称快照
+     * @param completedAt 完成时间
+     * @param sets 该动作的全部完成组
+     */
+    public record ExerciseProgressSession(Long sessionId, String workoutName, LocalDateTime completedAt,
+            List<LatestPerformanceSet> sets) {
     }
 
     /**

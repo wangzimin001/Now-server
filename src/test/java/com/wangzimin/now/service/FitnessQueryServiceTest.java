@@ -17,6 +17,7 @@ import java.time.LocalDateTime;
 import java.util.List;
 
 import com.wangzimin.now.repository.FitnessQueryRepository;
+import com.wangzimin.now.repository.FitnessQueryRepository.ExerciseProgressRow;
 import com.wangzimin.now.repository.FitnessQueryRepository.PlanExercise;
 import com.wangzimin.now.repository.FitnessQueryRepository.WorkoutHistoryItem;
 import com.wangzimin.now.repository.FitnessQueryRepository.WorkoutPlanResponse;
@@ -77,7 +78,8 @@ class FitnessQueryServiceTest {
                 new FitnessQueryRepository.WorkoutPlanRow(2L, "Unused", "desc", 30, 0L, null)));
         when(exerciseQuery.list()).thenReturn(List.of(
                 new PlanExercise(1L, 10L, "深蹲", "腿部", 3, 10, 90,
-                        "/static/exercises/gifs/squat.gif")));
+                        true, "/static/exercises/gifs/squat.gif", 11L, "腿举", "大腿",
+                        "/static/exercises/gifs/leg-press.gif", false)));
 
         List<WorkoutPlanResponse> plans =
                 new FitnessQueryService(new FitnessQueryRepository(jdbcClient)).workoutPlans();
@@ -85,6 +87,12 @@ class FitnessQueryServiceTest {
         assertEquals(2L, plans.get(0).usageCount());
         assertEquals(lastUsedAt, plans.get(0).lastUsedAt());
         assertEquals("/static/exercises/gifs/squat.gif", plans.get(0).exercises().get(0).gifUrl());
+        assertTrue(plans.get(0).exercises().get(0).progressiveOverloadEnabled());
+        assertEquals(11L, plans.get(0).exercises().get(0).replacementExerciseId());
+        assertEquals("腿举", plans.get(0).exercises().get(0).replacementExerciseName());
+        assertFalse(plans.get(0).exercises().get(0).replacementProgressiveOverloadEnabled());
+        assertEquals("/static/exercises/gifs/leg-press.gif",
+                plans.get(0).exercises().get(0).replacementExerciseGifUrl());
         assertEquals(0L, plans.get(1).usageCount());
         assertNull(plans.get(1).lastUsedAt());
 
@@ -111,6 +119,11 @@ class FitnessQueryServiceTest {
         assertTrue(exerciseSql.contains("ORDER BY gif_candidate.id DESC"));
         assertTrue(exerciseSql.contains("LIMIT 1"));
         assertTrue(exerciseSql.contains("JOIN exercise e ON e.id = pe.exercise_id"));
+        assertTrue(exerciseSql.contains("LEFT JOIN exercise alternative"));
+        assertTrue(exerciseSql.contains("pe.replacement_exercise_id"));
+        assertTrue(exerciseSql.contains("pe.progressive_overload_enabled AS progressiveOverloadEnabled"));
+        assertTrue(exerciseSql.contains(
+                "pe.replacement_progressive_overload_enabled AS replacementProgressiveOverloadEnabled"));
         assertFalse(exerciseSql.contains("pe.gif_url"));
     }
 
@@ -126,7 +139,7 @@ class FitnessQueryServiceTest {
 
     @Test
     @SuppressWarnings({ "rawtypes", "unchecked" })
-    void latestPerformanceUsesCurrentUserAndMostRecentCompletedExercise() {
+    void latestPerformanceUsesCurrentUserAndTwoMostRecentCompletedExercises() {
         JdbcClient jdbcClient = mock(JdbcClient.class);
         JdbcClient.StatementSpec statement = mock(JdbcClient.StatementSpec.class);
         JdbcClient.MappedQuerySpec query = mock(JdbcClient.MappedQuerySpec.class);
@@ -145,7 +158,40 @@ class FitnessQueryServiceTest {
         assertTrue(sql.contains("PARTITION BY se.exercise_id"));
         assertTrue(sql.contains("ORDER BY ws.ended_at DESC, se.id DESC"));
         assertTrue(sql.contains("completed_set.status = :completedStatus"));
-        assertTrue(sql.contains("ranked.performanceRank = :latestRank"));
+        assertTrue(sql.contains("ranked.performanceRank <= :recentLimit"));
+        assertTrue(sql.contains("sr.status = :completedStatus"));
+        assertTrue(sql.contains("sr.rpe"));
+    }
+
+    @Test
+    void exerciseProgressReturnsMetadataAndCompletedSessionEvidence() {
+        JdbcClient jdbcClient = mock(JdbcClient.class);
+        JdbcClient.StatementSpec statement = mock(JdbcClient.StatementSpec.class);
+        JdbcClient.MappedQuerySpec<ExerciseProgressRow> query = mock(JdbcClient.MappedQuerySpec.class);
+        LocalDateTime completedAt = LocalDateTime.of(2026, 8, 14, 12, 0);
+        ExerciseProgressRow row = new ExerciseProgressRow(
+                100025L, "杠铃卧推", "肱三头肌", "杠铃", "胸肌", "/bench.gif", "Gym visual",
+                201L, 301L, "胸部训练", completedAt, 1, 1,
+                BigDecimal.valueOf(60), 8, BigDecimal.valueOf(8));
+
+        when(jdbcClient.sql(anyString())).thenReturn(statement);
+        when(statement.param(anyString(), any())).thenReturn(statement);
+        when(statement.param(anyString(), any(), anyInt())).thenReturn(statement);
+        when(statement.query(ExerciseProgressRow.class)).thenReturn(query);
+        when(query.list()).thenReturn(List.of(row));
+
+        var response = new FitnessQueryService(new FitnessQueryRepository(jdbcClient))
+                .exerciseProgress(7L, 100025L);
+
+        assertEquals("杠铃卧推", response.name());
+        assertEquals(1, response.sessions().size());
+        assertEquals(2, response.sessions().get(0).sets().get(0).repsInReserve());
+        var sqlCaptor = org.mockito.ArgumentCaptor.forClass(String.class);
+        verify(jdbcClient).sql(sqlCaptor.capture());
+        String sql = sqlCaptor.getValue();
+        assertTrue(sql.contains("ws.owner_user_id = :userId"));
+        assertTrue(sql.contains("ws.name_snapshot AS workoutName"));
+        assertTrue(sql.contains("ranked.performanceRank <= :historyLimit"));
         assertTrue(sql.contains("sr.status = :completedStatus"));
     }
 }

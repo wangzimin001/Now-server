@@ -72,13 +72,24 @@ public class AuthService {
         if (!username.matches(SystemText.USERNAME_PATTERN.value())) {
             throw ApiErrorCode.USERNAME_FORMAT.exception();
         }
-        try {
-            long userId = authRepository.insertUser(
-                    username, passwordEncoder.encode(request.password()), displayName);
-            return issueTokens(new UserRow(userId, username, displayName, SystemText.EMPTY.value()));
-        } catch (DuplicateKeyException exception) {
+        if (authRepository.usernameExists(username)) {
             throw ApiErrorCode.USERNAME_EXISTS.exception();
         }
+        String passwordHash = passwordEncoder.encode(request.password());
+        for (int attempt = BusinessRule.ZERO_COUNT.value();
+                attempt < BusinessRule.PUBLIC_ID_GENERATION_ATTEMPTS.value(); attempt++) {
+            String publicId = randomPublicId();
+            try {
+                long userId = authRepository.insertUser(publicId, username, passwordHash, displayName);
+                return issueTokens(new UserRow(userId, publicId, username, displayName,
+                        null, SystemText.EMPTY.value()));
+            } catch (DuplicateKeyException exception) {
+                if (authRepository.usernameExists(username)) {
+                    throw ApiErrorCode.USERNAME_EXISTS.exception();
+                }
+            }
+        }
+        throw ApiErrorCode.PUBLIC_ID_GENERATION_FAILED.exception();
     }
 
     /**
@@ -116,7 +127,8 @@ public class AuthService {
                 .orElseThrow(ApiErrorCode.REFRESH_TOKEN_INVALID::exception);
         authRepository.revokeRefreshToken(refresh.id());
         return issueTokens(new UserRow(
-                refresh.userId(), refresh.username(), refresh.displayName(), SystemText.EMPTY.value()));
+                refresh.userId(), refresh.publicId(), refresh.username(), refresh.displayName(),
+                refresh.avatarUrl(), SystemText.EMPTY.value()));
     }
 
     /**
@@ -142,7 +154,8 @@ public class AuthService {
      */
     public UserProfile profile(Long userId) {
         return authRepository.findEnabledUserProfile(userId)
-                .map(row -> new UserProfile(row.id(), row.username(), row.displayName()))
+                .map(row -> new UserProfile(row.id(), row.publicId(), row.username(),
+                        row.displayName(), row.avatarUrl()))
                 .orElseThrow(ApiErrorCode.ACCOUNT_UNAVAILABLE::exception);
     }
 
@@ -172,7 +185,7 @@ public class AuthService {
         Instant refreshExpiry = issuedAt.plus(BusinessRule.REFRESH_TOKEN_DAYS.longValue(), ChronoUnit.DAYS);
         authRepository.insertRefreshToken(user.id(), hash(refreshToken), Timestamp.from(refreshExpiry));
         return new AuthResponse(accessToken, refreshToken, BusinessRule.ACCESS_TOKEN_SECONDS.longValue(),
-                new UserProfile(user.id(), user.username(), user.displayName()));
+                new UserProfile(user.id(), user.publicId(), user.username(), user.displayName(), user.avatarUrl()));
     }
 
     /**
@@ -282,10 +295,30 @@ public class AuthService {
      * 描述允许返回客户端的账号字段。
      *
      * @param id 用户主键
+     * @param publicId 对外可搜索的用户 ID
      * @param username 登录名
      * @param displayName 展示名称
+     * @param avatarUrl 可空头像地址
      */
-    public record UserProfile(Long id, String username, String displayName) {
+    public record UserProfile(Long id, String publicId, String username, String displayName, String avatarUrl) {
+    }
+
+    /**
+     * 生成便于人工输入且规避易混淆字符的公开用户 ID。
+     *
+     * <p>公开 ID 使用密码学安全随机源并由数据库唯一约束兜底；
+     * 注册流程遇到极低概率碰撞时会在统一次数内自动重试。</p>
+     *
+     * @return 以 N 开头的固定长度公开 ID
+     */
+    private String randomPublicId() {
+        String alphabet = SystemText.PUBLIC_ID_ALPHABET.value();
+        StringBuilder result = new StringBuilder(SystemText.PUBLIC_ID_PREFIX.value());
+        for (int index = BusinessRule.ZERO_COUNT.value();
+                index < BusinessRule.PUBLIC_ID_RANDOM_LENGTH.value(); index++) {
+            result.append(alphabet.charAt(secureRandom.nextInt(alphabet.length())));
+        }
+        return result.toString();
     }
 
 }

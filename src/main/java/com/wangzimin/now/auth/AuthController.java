@@ -9,6 +9,8 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.RequestPart;
+import org.springframework.web.multipart.MultipartFile;
 
 import jakarta.validation.Valid;
 import com.wangzimin.now.domain.ApiPath;
@@ -24,14 +26,17 @@ import com.wangzimin.now.domain.ApiPath;
 public class AuthController {
 
     private final AuthService authService;
+    private final UserProfileService profileService;
 
     /**
      * 创建鉴权控制器。
      *
      * @param authService 负责账号与令牌业务的服务
+     * @param profileService 负责当前账号公开资料更新的服务
      */
-    public AuthController(AuthService authService) {
+    public AuthController(AuthService authService, UserProfileService profileService) {
         this.authService = authService;
+        this.profileService = profileService;
     }
 
     /**
@@ -96,5 +101,18 @@ public class AuthController {
     @GetMapping(ApiPath.CURRENT_USER_SEGMENT)
     public AuthService.UserProfile me(@AuthenticationPrincipal Jwt jwt) {
         return authService.profile(Long.valueOf(jwt.getSubject()));
+    }
+
+    /**
+     * 上传并替换当前账号头像。
+     *
+     * @param jwt 由资源服务器验证后的访问令牌
+     * @param file 仅允许图片类型的头像文件
+     * @return 更新后的公开账号资料
+     */
+    @PostMapping(ApiPath.AVATAR_SEGMENT)
+    public AuthService.UserProfile updateAvatar(@AuthenticationPrincipal Jwt jwt,
+            @RequestPart(ApiPath.MULTIPART_FILE_PART) MultipartFile file) {
+        return profileService.updateAvatar(Long.valueOf(jwt.getSubject()), file);
     }
 }

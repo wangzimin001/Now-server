@@ -5,3 +5,4 @@ target/
 .env
 application-local.yml
 .codegraph/
+uploads/

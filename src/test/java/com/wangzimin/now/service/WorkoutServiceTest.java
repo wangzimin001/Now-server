@@ -2,12 +2,14 @@ package com.wangzimin.now.service;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import org.junit.jupiter.api.Test;
@@ -15,16 +17,35 @@ import org.mockito.ArgumentCaptor;
 import org.springframework.jdbc.core.simple.JdbcClient;
 
 import java.math.BigDecimal;
+import java.time.Instant;
 import java.util.List;
 
 import com.wangzimin.now.repository.WorkoutRepository;
 import com.wangzimin.now.repository.WorkoutRepository.ExercisePerformanceSummary;
 import com.wangzimin.now.repository.WorkoutRepository.HistoricalExerciseMetricRow;
 import com.wangzimin.now.repository.WorkoutRepository.HistoricalWeightRepetitionRow;
+import com.wangzimin.now.repository.WorkoutRepository.PlanExerciseRequest;
 import com.wangzimin.now.repository.WorkoutRepository.WorkoutExerciseRequest;
+import com.wangzimin.now.repository.WorkoutRepository.WorkoutCompletionRequest;
+import com.wangzimin.now.repository.WorkoutRepository.WorkoutHistoryExerciseUpdate;
+import com.wangzimin.now.repository.WorkoutRepository.WorkoutHistoryUpdateRequest;
+import com.wangzimin.now.repository.WorkoutRepository.WorkoutPlanRequest;
 import com.wangzimin.now.repository.WorkoutRepository.WorkoutSetRequest;
 
 class WorkoutServiceTest {
+
+    @Test
+    void rejectsReplacementThatMatchesPrimaryExerciseBeforeRepositoryAccess() {
+        WorkoutRepository repository = mock(WorkoutRepository.class);
+        WorkoutService service = new WorkoutService(repository);
+        WorkoutPlanRequest request = new WorkoutPlanRequest(
+                "冲突模板", "替换动作校验", 45,
+                List.of(new PlanExerciseRequest(100025L, 100025L, 3, 10, 90, false)));
+
+        assertThrows(org.springframework.web.server.ResponseStatusException.class,
+                () -> service.createPlan(7L, request));
+        verifyNoInteractions(repository);
+    }
 
     @Test
     void deletingOwnedPlanSoftDeletesIt() {
@@ -113,5 +134,54 @@ class WorkoutServiceTest {
         assertTrue(summary.achievements().stream().anyMatch(item -> item.type().equals("EXERCISE_VOLUME")));
         assertEquals(BigDecimal.valueOf(1260), summary.totalVolumeKg());
         assertEquals(22, summary.totalRepetitions());
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void estimatedOneRepMaxFloorsToQuarterKilogram() {
+        JdbcClient jdbcClient = mock(JdbcClient.class);
+        JdbcClient.StatementSpec metricStatement = mock(JdbcClient.StatementSpec.class);
+        JdbcClient.StatementSpec weightRepStatement = mock(JdbcClient.StatementSpec.class);
+        JdbcClient.MappedQuerySpec<HistoricalExerciseMetricRow> metricQuery = mock(JdbcClient.MappedQuerySpec.class);
+        JdbcClient.MappedQuerySpec<HistoricalWeightRepetitionRow> weightRepQuery = mock(JdbcClient.MappedQuerySpec.class);
+        when(jdbcClient.sql(anyString())).thenReturn(metricStatement, weightRepStatement);
+        when(metricStatement.param(anyString(), any(), any(Integer.class))).thenReturn(metricStatement);
+        when(weightRepStatement.param(anyString(), any(), any(Integer.class))).thenReturn(weightRepStatement);
+        when(metricStatement.param(anyString(), any())).thenReturn(metricStatement);
+        when(weightRepStatement.param(anyString(), any())).thenReturn(weightRepStatement);
+        when(metricStatement.query(HistoricalExerciseMetricRow.class)).thenReturn(metricQuery);
+        when(weightRepStatement.query(HistoricalWeightRepetitionRow.class)).thenReturn(weightRepQuery);
+        when(metricQuery.list()).thenReturn(List.of());
+        when(weightRepQuery.list()).thenReturn(List.of());
+
+        WorkoutExerciseRequest exercise = new WorkoutExerciseRequest(100025L, "杠铃卧推", List.of(
+                new WorkoutSetRequest(1, new BigDecimal("50"), 8, 90, true)));
+        ExercisePerformanceSummary summary = new WorkoutService(new WorkoutRepository(jdbcClient))
+                .evaluateExercisePerformance(7L, List.of(exercise)).get(0);
+
+        assertEquals(new BigDecimal("63.25"), summary.estimatedOneRepMaxKg());
+        ArgumentCaptor<String> sql = ArgumentCaptor.forClass(String.class);
+        verify(jdbcClient, times(2)).sql(sql.capture());
+        assertTrue(sql.getAllValues().get(0).contains(":oneRepMaxStep"));
+    }
+
+    @Test
+    void rejectsWeightsOutsideQuarterKilogramStepBeforeRepositoryAccess() {
+        WorkoutRepository repository = mock(WorkoutRepository.class);
+        WorkoutService service = new WorkoutService(repository);
+        WorkoutSetRequest invalidSet = new WorkoutSetRequest(
+                1, new BigDecimal("50.10"), 8, 90, true);
+        WorkoutCompletionRequest completion = new WorkoutCompletionRequest(
+                null, "重量校验", Instant.parse("2026-08-15T08:00:00Z"),
+                Instant.parse("2026-08-15T08:30:00Z"), 30,
+                List.of(new WorkoutExerciseRequest(100025L, "杠铃卧推", List.of(invalidSet))));
+        WorkoutHistoryUpdateRequest history = new WorkoutHistoryUpdateRequest(List.of(
+                new WorkoutHistoryExerciseUpdate(301L, List.of(invalidSet))));
+
+        assertThrows(org.springframework.web.server.ResponseStatusException.class,
+                () -> service.completeWorkout(7L, completion));
+        assertThrows(org.springframework.web.server.ResponseStatusException.class,
+                () -> service.updateWorkoutHistory(7L, 201L, history));
+        verifyNoInteractions(repository);
     }
 }

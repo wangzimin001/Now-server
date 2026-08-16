@@ -55,7 +55,8 @@ public class SecurityConfig {
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers(ApiPath.AUTH_REGISTER, ApiPath.AUTH_LOGIN, ApiPath.AUTH_REFRESH,
                                 ApiPath.AUTH_LOGOUT, ApiPath.HEALTH, ApiPath.EXERCISES,
-                                ApiPath.EXERCISE_CATEGORIES, ApiPath.ACTUATOR_HEALTH, ApiPath.ERROR)
+                                ApiPath.EXERCISE_CATEGORIES, ApiPath.SOCIAL_FILES,
+                                ApiPath.DEMO_MEDIA, ApiPath.ACTUATOR_HEALTH, ApiPath.ERROR)
                         .permitAll()
                         .requestMatchers(HttpMethod.GET, ApiPath.DASHBOARD, ApiPath.WORKOUT_PLANS).permitAll()
                         .anyRequest().authenticated())

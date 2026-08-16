@@ -9,6 +9,7 @@ import com.wangzimin.now.repository.FitnessQueryRepository.ExercisePageResponse;
 import com.wangzimin.now.repository.FitnessQueryRepository.WorkoutHistoryItem;
 import com.wangzimin.now.repository.FitnessQueryRepository.WorkoutHistoryDetail;
 import com.wangzimin.now.repository.FitnessQueryRepository.LatestExercisePerformance;
+import com.wangzimin.now.repository.FitnessQueryRepository.ExerciseProgressResponse;
 import com.wangzimin.now.repository.FitnessQueryRepository.WorkoutPlanResponse;
 import com.wangzimin.now.service.WorkoutService;
 import com.wangzimin.now.repository.WorkoutRepository.WorkoutCompletionRequest;
@@ -219,17 +220,32 @@ public class FitnessController {
     }
 
     /**
-     * 批量查询动作在当前账号中的最近完成表现。
+     * 批量查询动作在当前账号中的最近两次完成表现。
      *
      * @param jwt 已验证 JWT
      * @param exerciseIds 去重前的动作主键集合
-     * @return 每个动作最近一次训练的完成组
+     * @return 每个动作最近一次兼容字段及两次连续表现证据
      */
     @GetMapping(ApiPath.LATEST_PERFORMANCE_SEGMENT)
     public List<LatestExercisePerformance> latestExercisePerformances(
             @AuthenticationPrincipal Jwt jwt,
             @RequestParam List<Long> exerciseIds) {
         return fitnessQueryService.latestExercisePerformances(userId(jwt), exerciseIds);
+    }
+
+    /**
+     * 查询当前账号中一个动作的成长历史。
+     *
+     * <p>接口位于受保护的训练路由下，动作库公开读取规则不会放宽用户历史的鉴权。</p>
+     *
+     * @param jwt 已验证 JWT
+     * @param exerciseId 动作库主键
+     * @return 动作元数据与最近完成训练
+     */
+    @GetMapping(ApiPath.EXERCISE_PROGRESS_SEGMENT)
+    public ExerciseProgressResponse exerciseProgress(@AuthenticationPrincipal Jwt jwt,
+            @PathVariable Long exerciseId) {
+        return fitnessQueryService.exerciseProgress(userId(jwt), exerciseId);
     }
 
     /**

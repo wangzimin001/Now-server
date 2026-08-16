@@ -4,11 +4,14 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
 import org.junit.jupiter.api.Test;
@@ -16,11 +19,15 @@ import org.junit.jupiter.api.Test;
 class CodeQualityRulesTest {
 
     private static final Path MAIN_SOURCE = Path.of("src", "main", "java");
-    private static final double MINIMUM_COMMENT_RATIO = 0.30d;
+    private static final Path ALL_SOURCE = Path.of("src");
+    private static final BigDecimal MINIMUM_COMMENT_RATIO = new BigDecimal("0.30");
+    private static final Pattern FORBIDDEN_BINARY_FLOAT_TYPE =
+            Pattern.compile("\\b(?:dou" + "ble|Dou" + "ble|flo" + "at|Flo" + "at)\\b");
     private static final List<String> FORBIDDEN_DOMAIN_LITERALS = List.of(
             "\"COMPLETED\"", "'COMPLETED'",
             "\"SKIPPED\"", "'SKIPPED'",
             "\"DELETED\"", "'DELETED'",
+            "\"STANDARD\"", "\"WARM_UP\"", "\"DROP_SET\"",
             "\"exercise-dataset\"",
             "\"free\"", "\"cycle\""
     );
@@ -32,10 +39,21 @@ class CodeQualityRulesTest {
                 .filter(line -> !line.isBlank())
                 .toList();
         long commentLines = countCommentLines(lines);
-        double ratio = (double) commentLines / lines.size();
+        BigDecimal ratio = BigDecimal.valueOf(commentLines)
+                .divide(BigDecimal.valueOf(lines.size()), 4, RoundingMode.HALF_UP);
+        String percentage = ratio.movePointRight(2).setScale(2, RoundingMode.HALF_UP).toPlainString();
 
-        assertTrue(ratio >= MINIMUM_COMMENT_RATIO,
-                () -> "生产 Java 注释率为 %.2f%%，低于 30%%".formatted(ratio * 100));
+        assertTrue(ratio.compareTo(MINIMUM_COMMENT_RATIO) >= 0,
+                () -> "生产 Java 注释率为 " + percentage + "% ，低于 30%");
+    }
+
+    @Test
+    void allJavaSourceUsesBigDecimalForDecimalValues() throws IOException {
+        allJavaFiles().forEach(path -> {
+            String source = readSource(path);
+            assertFalse(FORBIDDEN_BINARY_FLOAT_TYPE.matcher(source).find(),
+                    () -> path + " 包含禁用的二进制浮点类型，十进制值必须使用 BigDecimal");
+        });
     }
 
     @Test
@@ -114,6 +132,10 @@ class CodeQualityRulesTest {
 
     private Stream<Path> javaFiles() throws IOException {
         return Files.walk(MAIN_SOURCE).filter(path -> path.toString().endsWith(".java"));
+    }
+
+    private Stream<Path> allJavaFiles() throws IOException {
+        return Files.walk(ALL_SOURCE).filter(path -> path.toString().endsWith(".java"));
     }
 
     private List<String> readLines(Path path) {

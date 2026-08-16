@@ -15,6 +15,7 @@ import java.util.stream.Stream;
 
 import com.wangzimin.now.service.FitnessQueryService;
 import com.wangzimin.now.repository.FitnessQueryRepository.ExercisePageResponse;
+import com.wangzimin.now.repository.FitnessQueryRepository.ExerciseProgressResponse;
 import com.wangzimin.now.repository.FitnessQueryRepository.ExerciseResponse;
 import com.wangzimin.now.repository.FitnessQueryRepository.ExerciseSubcategory;
 import com.wangzimin.now.repository.FitnessQueryRepository.LatestExercisePerformance;
@@ -32,6 +33,7 @@ import com.wangzimin.now.repository.WorkoutRepository.WorkoutHistoryUpdateReques
 import com.wangzimin.now.repository.WorkoutRepository.WorkoutExerciseRequest;
 import com.wangzimin.now.repository.WorkoutRepository.WorkoutPlanRequest;
 import com.wangzimin.now.repository.WorkoutRepository.WorkoutSetRequest;
+import com.wangzimin.now.domain.WorkoutSetType;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.security.oauth2.jwt.Jwt;
@@ -75,10 +77,11 @@ class FitnessControllerTest {
         WorkoutService workoutService = mock(WorkoutService.class);
         WorkoutPlanRequest request = new WorkoutPlanRequest(
                 "胸背训练", "推拉组合", 50,
-                List.of(new PlanExerciseRequest(100025L, 4, 8, 120)));
+                List.of(new PlanExerciseRequest(100025L, 100662L, 4, 8, 120, true, false)));
         WorkoutPlanResponse response = new WorkoutPlanResponse(
                 9L, "胸背训练", "推拉组合", 50,
-                List.of(new PlanExercise(9L, 100025L, "杠铃卧推", "胸部", 4, 8, 120)));
+                List.of(new PlanExercise(9L, 100025L, "杠铃卧推", "肱三头肌", "中胸",
+                        4, 8, 120, true, null, 100662L, "俯卧撑", "肱三头肌", "中胸", null, false)));
         Jwt jwt = jwt(7L);
         when(workoutService.createPlan(7L, request)).thenReturn(9L);
         when(queryService.workoutPlan(9L, 7L)).thenReturn(response);
@@ -87,6 +90,10 @@ class FitnessControllerTest {
 
         assertSame(response, controller.createWorkoutPlan(jwt, request));
         assertSame(response, controller.updateWorkoutPlan(jwt, 9L, request));
+        assertTrue(response.exercises().get(0).progressiveOverloadEnabled());
+        assertEquals("中胸", response.exercises().get(0).subcategoryLabel());
+        assertEquals(100662L, response.exercises().get(0).replacementExerciseId());
+        assertFalse(response.exercises().get(0).replacementProgressiveOverloadEnabled());
         controller.deleteWorkoutPlan(jwt, 9L);
         verify(workoutService).updatePlan(7L, 9L, request);
         verify(workoutService).deletePlan(7L, 9L);
@@ -114,6 +121,7 @@ class FitnessControllerTest {
 
         // 组间歇必须作为组记录的一部分穿过控制器边界，不能在委托前被丢弃。
         assertEquals(90, request.exercises().get(0).sets().get(0).restDurationSeconds());
+        assertEquals(WorkoutSetType.STANDARD, request.exercises().get(0).sets().get(0).setType());
         assertSame(response, controller.completeWorkout(jwt, request));
         verify(workoutService).completeWorkout(7L, request);
     }
@@ -134,6 +142,22 @@ class FitnessControllerTest {
 
         assertSame(expected, controller.latestExercisePerformances(jwt, exerciseIds));
         verify(queryService).latestExercisePerformances(7L, exerciseIds);
+    }
+
+    @Test
+    void delegatesExerciseProgressForCurrentUser() {
+        FitnessQueryService queryService = mock(FitnessQueryService.class);
+        WorkoutService workoutService = mock(WorkoutService.class);
+        Jwt jwt = jwt(7L);
+        ExerciseProgressResponse expected = new ExerciseProgressResponse(
+                100025L, "杠铃卧推", "肱三头肌", "杠铃", "胸肌", "/bench.gif",
+                "Gym visual", List.of());
+        when(queryService.exerciseProgress(7L, 100025L)).thenReturn(expected);
+
+        FitnessController controller = new FitnessController(queryService, workoutService);
+
+        assertSame(expected, controller.exerciseProgress(jwt, 100025L));
+        verify(queryService).exerciseProgress(7L, 100025L);
     }
 
     @Test

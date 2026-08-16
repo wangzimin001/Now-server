@@ -34,4 +34,16 @@ class ExerciseCategorySchemaTest {
         assertFalse(source.contains("chestRegion"));
         assertFalse(source.contains("forearmRegion"));
     }
+
+    /** 确认肩部二级分类使用完整解剖名称，稳定编码和动作映射保持不变。 */
+    @Test
+    void migrationUsesCompleteDeltoidSubcategoryNames() throws IOException {
+        String migration = Files.readString(Path.of("src", "main", "resources", "db", "migration",
+                "V26__rename_deltoid_subcategories.sql"));
+
+        assertTrue(migration.contains("'anterior-deltoid' THEN '三角肌前束'"));
+        assertTrue(migration.contains("'lateral-deltoid' THEN '三角肌中束'"));
+        assertTrue(migration.contains("'posterior-deltoid' THEN '三角肌后束'"));
+        assertTrue(migration.contains("WHERE category_code = 'shoulders'"));
+    }
 }

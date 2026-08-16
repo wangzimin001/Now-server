@@ -10,6 +10,7 @@ import com.wangzimin.now.repository.FitnessQueryRepository.DashboardResponse;
 import com.wangzimin.now.repository.FitnessQueryRepository.ExerciseCategory;
 import com.wangzimin.now.repository.FitnessQueryRepository.ExercisePageResponse;
 import com.wangzimin.now.repository.FitnessQueryRepository.LatestExercisePerformance;
+import com.wangzimin.now.repository.FitnessQueryRepository.ExerciseProgressResponse;
 import com.wangzimin.now.repository.FitnessQueryRepository.WorkoutHistoryDetail;
 import com.wangzimin.now.repository.FitnessQueryRepository.WorkoutHistoryItem;
 import com.wangzimin.now.repository.FitnessQueryRepository.WorkoutPlanResponse;
@@ -158,14 +159,25 @@ public class FitnessQueryService {
     }
 
     /**
-     * 批量查询动作最近一次完成表现。
+     * 批量查询动作最近两次完成表现。
      *
      * @param userId 当前用户主键
      * @param exerciseIds 动作主键集合
-     * @return 最近表现列表
+     * @return 包含连续两次证据的最近表现列表
      */
     public List<LatestExercisePerformance> latestExercisePerformances(
             Long userId, Collection<Long> exerciseIds) {
         return repository.latestExercisePerformances(userId, exerciseIds);
+    }
+
+    /**
+     * 查询一个动作在当前账号下的完整成长记录。
+     *
+     * @param userId 当前用户主键
+     * @param exerciseId 动作库主键
+     * @return 动作元数据、完成训练和组记录
+     */
+    public ExerciseProgressResponse exerciseProgress(Long userId, Long exerciseId) {
+        return repository.exerciseProgress(userId, exerciseId);
     }
 }

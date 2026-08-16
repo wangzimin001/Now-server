@@ -32,17 +32,19 @@ public class AuthRepository {
     /**
      * 插入一个启用账号。
      *
+     * @param publicId 对外公开的用户 ID
      * @param username 规范化用户名
      * @param passwordHash BCrypt 密码摘要
      * @param displayName 展示名称
      * @return 数据库生成的账号主键
      */
-    public long insertUser(String username, String passwordHash, String displayName) {
+    public long insertUser(String publicId, String username, String passwordHash, String displayName) {
         GeneratedKeyHolder keyHolder = new GeneratedKeyHolder();
         jdbcClient.sql("""
-                        INSERT INTO app_user (username, password_hash, display_name, enabled)
-                        VALUES (:username, :passwordHash, :displayName, TRUE)
+                        INSERT INTO app_user (public_id, username, password_hash, display_name, enabled)
+                        VALUES (:publicId, :username, :passwordHash, :displayName, TRUE)
                         """)
+                .param("publicId", publicId)
                 .param("username", username)
                 .param("passwordHash", passwordHash)
                 .param("displayName", displayName)
@@ -55,6 +57,19 @@ public class AuthRepository {
     }
 
     /**
+     * 判断规范化用户名是否已经注册，包括当前停用账号。
+     *
+     * @param username 规范化用户名
+     * @return 已存在时为真
+     */
+    public boolean usernameExists(String username) {
+        return jdbcClient.sql("SELECT COUNT(*) FROM app_user WHERE username = :username")
+                .param("username", username)
+                .query(Integer.class)
+                .single() > 0;
+    }
+
+    /**
      * 按用户名查询启用账号及密码摘要。
      *
      * @param username 规范化用户名
@@ -62,7 +77,8 @@ public class AuthRepository {
      */
     public Optional<UserRow> findEnabledUserByUsername(String username) {
         return jdbcClient.sql("""
-                        SELECT id, username, display_name AS displayName, password_hash AS passwordHash
+                        SELECT id, public_id AS publicId, username, display_name AS displayName,
+                               avatar_url AS avatarUrl, password_hash AS passwordHash
                         FROM app_user
                         WHERE username = :username AND enabled = TRUE
                         """)
@@ -79,7 +95,8 @@ public class AuthRepository {
      */
     public Optional<RefreshTokenRow> findActiveRefreshToken(String tokenHash) {
         return jdbcClient.sql("""
-                        SELECT rt.id, rt.user_id AS userId, u.username, u.display_name AS displayName
+                        SELECT rt.id, rt.user_id AS userId, u.public_id AS publicId, u.username,
+                               u.display_name AS displayName, u.avatar_url AS avatarUrl
                         FROM auth_refresh_token rt
                         JOIN app_user u ON u.id = rt.user_id AND u.enabled = TRUE
                         WHERE rt.token_hash = :tokenHash
@@ -129,13 +146,31 @@ public class AuthRepository {
      */
     public Optional<UserProfileRow> findEnabledUserProfile(Long userId) {
         return jdbcClient.sql("""
-                        SELECT id, username, display_name AS displayName
+                        SELECT id, public_id AS publicId, username, display_name AS displayName,
+                               avatar_url AS avatarUrl
                         FROM app_user
                         WHERE id = :id AND enabled = TRUE
                         """)
                 .param("id", userId)
                 .query(UserProfileRow.class)
                 .optional();
+    }
+
+    /**
+     * 更新启用账号的头像资源地址。
+     *
+     * @param userId 当前用户主键
+     * @param avatarUrl 已持久化的站内图片地址
+     */
+    public void updateAvatar(Long userId, String avatarUrl) {
+        jdbcClient.sql("""
+                        UPDATE app_user
+                        SET avatar_url = :avatarUrl
+                        WHERE id = :userId AND enabled = TRUE
+                        """)
+                .param("userId", userId)
+                .param("avatarUrl", avatarUrl)
+                .update();
     }
 
     /**
@@ -160,18 +195,21 @@ public class AuthRepository {
      * 鉴权查询使用的账号行。
      *
      * @param id 用户主键
+     * @param publicId 公开用户 ID
      * @param username 用户名
      * @param displayName 展示名称
+     * @param avatarUrl 头像地址
      * @param passwordHash 密码摘要
      */
-    public record UserRow(Long id, String username, String displayName, String passwordHash) {
+    public record UserRow(Long id, String publicId, String username, String displayName,
+            String avatarUrl, String passwordHash) {
         /**
          * 返回不携带密码摘要的安全副本。
          *
          * @return 安全账号行
          */
         public UserRow withoutPassword() {
-            return new UserRow(id, username, displayName, SystemText.EMPTY.value());
+            return new UserRow(id, publicId, username, displayName, avatarUrl, SystemText.EMPTY.value());
         }
     }
 
@@ -180,19 +218,24 @@ public class AuthRepository {
      *
      * @param id 刷新令牌主键
      * @param userId 用户主键
+     * @param publicId 公开用户 ID
      * @param username 用户名
      * @param displayName 展示名称
+     * @param avatarUrl 头像地址
      */
-    public record RefreshTokenRow(Long id, Long userId, String username, String displayName) {
+    public record RefreshTokenRow(Long id, Long userId, String publicId, String username,
+            String displayName, String avatarUrl) {
     }
 
     /**
      * 公开账号资料查询行。
      *
      * @param id 用户主键
+     * @param publicId 公开用户 ID
      * @param username 用户名
      * @param displayName 展示名称
+     * @param avatarUrl 头像地址
      */
-    public record UserProfileRow(Long id, String username, String displayName) {
+    public record UserProfileRow(Long id, String publicId, String username, String displayName, String avatarUrl) {
     }
 }

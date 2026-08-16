@@ -14,8 +14,11 @@ import java.util.stream.Collectors;
 import com.wangzimin.now.domain.AchievementType;
 import com.wangzimin.now.domain.ApiErrorCode;
 import com.wangzimin.now.domain.BusinessRule;
+import com.wangzimin.now.domain.DecimalBusinessRule;
+import com.wangzimin.now.domain.EffortRule;
 import com.wangzimin.now.domain.SystemText;
 import com.wangzimin.now.domain.ValidationRule;
+import com.wangzimin.now.domain.WorkoutSetType;
 import com.wangzimin.now.domain.WorkoutStatus;
 
 import jakarta.validation.Valid;
@@ -241,7 +244,7 @@ public class WorkoutRepository {
 
         BigDecimal totalVolume = request.exercises().stream()
                 .flatMap(exercise -> exercise.sets().stream())
-                .filter(set -> Boolean.TRUE.equals(set.completed()))
+                .filter(set -> Boolean.TRUE.equals(set.completed()) && set.setType().contributesToVolume())
                 .map(set -> set.weightKg().multiply(BigDecimal.valueOf(set.repetitions())))
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
         WorkoutComparison comparison = compareWithPreviousWorkout(userId, request, totalVolume);
@@ -346,23 +349,26 @@ public class WorkoutRepository {
             for (int index = 0; index < exercise.sets().size(); index++) {
                 WorkoutSetRequest set = exercise.sets().get(index);
                 boolean completed = Boolean.TRUE.equals(set.completed());
-                if (completed) {
+                if (completed && set.setType().contributesToVolume()) {
                     totalVolume = totalVolume.add(set.weightKg().multiply(BigDecimal.valueOf(set.repetitions())));
                 }
                 jdbcClient.sql("""
                                 INSERT INTO set_record
-                                    (session_exercise_id, set_number, weight_kg, repetitions,
+                                    (session_exercise_id, set_number, set_type, weight_kg, repetitions, rpe,
                                      rest_duration_seconds, status, completed_at)
-                                SELECT :sessionExerciseId, :setNumber, :weightKg, :repetitions,
-                                       :restDurationSeconds, :status,
+                                SELECT :sessionExerciseId, :setNumber, :setType, :weightKg, :repetitions,
+                                       :rpe, :restDurationSeconds, :status,
                                        CASE WHEN :status = :completedStatus THEN ws.ended_at ELSE NULL END
                                 FROM workout_session ws
                                 WHERE ws.id = :sessionId
                                 """)
                         .param("sessionExerciseId", exercise.sessionExerciseId())
                         .param("setNumber", index + BusinessRule.ORDER_INDEX_OFFSET.value())
+                        .param("setType", set.setType().databaseValue())
                         .param("weightKg", set.weightKg())
                         .param("repetitions", set.repetitions())
+                        .param("rpe", EffortRule.toRpe(completed && set.setType().contributesToPerformance()
+                                ? set.repsInReserve() : null), Types.DECIMAL)
                         .param("restDurationSeconds", set.restDurationSeconds(), Types.INTEGER)
                         .param("status", completed
                                 ? WorkoutStatus.COMPLETED.databaseValue()
@@ -425,7 +431,8 @@ public class WorkoutRepository {
         PreviousWorkout previous = jdbcClient.sql("""
                         SELECT ws.total_volume_kg AS totalVolumeKg,
                                ws.duration_minutes AS durationMinutes,
-                               SUM(CASE WHEN sr.status = :completedStatus THEN 1 ELSE 0 END) AS completedSetCount
+                               SUM(CASE WHEN sr.status = :completedStatus AND sr.set_type <> :warmUpSetType
+                                   THEN 1 ELSE 0 END) AS completedSetCount
                         FROM workout_session ws
                         LEFT JOIN session_exercise se ON se.session_id = ws.id
                         LEFT JOIN set_record sr ON sr.session_exercise_id = se.id
@@ -441,6 +448,7 @@ public class WorkoutRepository {
                 .param("planId", request.planId(), Types.BIGINT)
                 .param("name", request.name().trim())
                 .param("completedStatus", WorkoutStatus.COMPLETED.databaseValue())
+                .param("warmUpSetType", WorkoutSetType.WARM_UP.databaseValue())
                 .param("resultLimit", BusinessRule.COLLECTION_MIN_SIZE.value())
                 .query(PreviousWorkout.class)
                 .optional()
@@ -449,7 +457,9 @@ public class WorkoutRepository {
             return null;
         }
         int completedSetCount = request.exercises().stream()
-                .mapToInt(exercise -> (int) exercise.sets().stream().filter(set -> Boolean.TRUE.equals(set.completed())).count())
+                .mapToInt(exercise -> (int) exercise.sets().stream()
+                        .filter(set -> Boolean.TRUE.equals(set.completed()) && set.setType().contributesToVolume())
+                        .count())
                 .sum();
         BigDecimal volumeDifference = totalVolume.subtract(previous.totalVolumeKg());
         BigDecimal volumePercent = previous.totalVolumeKg().compareTo(BigDecimal.ZERO)
@@ -485,7 +495,7 @@ public class WorkoutRepository {
         List<ExercisePerformanceSummary> summaries = new ArrayList<>();
         for (WorkoutExerciseRequest exercise : exercises) {
             List<WorkoutSetRequest> completedSets = exercise.sets().stream()
-                    .filter(set -> Boolean.TRUE.equals(set.completed()))
+                    .filter(set -> Boolean.TRUE.equals(set.completed()) && set.setType().contributesToVolume())
                     .toList();
             CurrentExerciseMetrics current = currentMetrics(completedSets);
             HistoricalExerciseMetricRow previous = baselines.get(exercise.exerciseId());
@@ -523,7 +533,9 @@ public class WorkoutRepository {
                                    SUM(sr.repetitions) AS totalRepetitions
                             FROM session_exercise se
                             JOIN workout_session ws ON ws.id = se.session_id
-                            JOIN set_record sr ON sr.session_exercise_id = se.id AND sr.status = :completedStatus
+                            JOIN set_record sr ON sr.session_exercise_id = se.id
+                              AND sr.status = :completedStatus
+                              AND sr.set_type <> :warmUpSetType
                             WHERE ws.status = :completedStatus
                               AND ((:userId IS NULL AND ws.owner_user_id IS NULL) OR ws.owner_user_id = :userId)
                               AND se.exercise_id IN (:exerciseIds)
@@ -531,13 +543,16 @@ public class WorkoutRepository {
                         )
                         SELECT se.exercise_id AS exerciseId,
                                MAX(sr.weight_kg) AS maxWeightKg,
-                               MAX(sr.weight_kg * (1 + sr.repetitions / :oneRepMaxDivisor)) AS estimatedOneRepMaxKg,
+                               MAX(FLOOR((sr.weight_kg * (1 + sr.repetitions / :oneRepMaxDivisor))
+                                   / :oneRepMaxStep) * :oneRepMaxStep) AS estimatedOneRepMaxKg,
                                MAX(sr.weight_kg * sr.repetitions) AS maxSetVolumeKg,
                                MAX(metrics.totalVolumeKg) AS maxExerciseVolumeKg,
                                MAX(metrics.totalRepetitions) AS maxExerciseRepetitions
                         FROM session_exercise se
                         JOIN workout_session ws ON ws.id = se.session_id
-                        JOIN set_record sr ON sr.session_exercise_id = se.id AND sr.status = :completedStatus
+                         JOIN set_record sr ON sr.session_exercise_id = se.id
+                           AND sr.status = :completedStatus
+                           AND sr.set_type = :standardSetType
                         JOIN exercise_session_metrics metrics
                           ON metrics.exerciseId = se.exercise_id AND metrics.session_id = se.session_id
                         WHERE ws.status = :completedStatus
@@ -548,7 +563,10 @@ public class WorkoutRepository {
                 .param("userId", userId, Types.BIGINT)
                 .param("exerciseIds", exerciseIds)
                 .param("completedStatus", WorkoutStatus.COMPLETED.databaseValue())
+                .param("warmUpSetType", WorkoutSetType.WARM_UP.databaseValue())
+                .param("standardSetType", WorkoutSetType.STANDARD.databaseValue())
                 .param("oneRepMaxDivisor", BigDecimal.valueOf(BusinessRule.ONE_REP_MAX_DIVISOR.value()))
+                .param("oneRepMaxStep", DecimalBusinessRule.WEIGHT_STEP_KG.value())
                 .query(HistoricalExerciseMetricRow.class)
                 .list();
     }
@@ -572,14 +590,16 @@ public class WorkoutRepository {
                         FROM session_exercise se
                         JOIN workout_session ws ON ws.id = se.session_id
                         JOIN set_record sr ON sr.session_exercise_id = se.id
-                        WHERE ws.status = :completedStatus AND sr.status = :completedStatus
-                          AND ((:userId IS NULL AND ws.owner_user_id IS NULL) OR ws.owner_user_id = :userId)
+                         WHERE ws.status = :completedStatus AND sr.status = :completedStatus
+                           AND sr.set_type = :standardSetType
+                           AND ((:userId IS NULL AND ws.owner_user_id IS NULL) OR ws.owner_user_id = :userId)
                           AND se.exercise_id IN (:exerciseIds)
                         GROUP BY se.exercise_id, sr.weight_kg
                         """)
                 .param("userId", userId, Types.BIGINT)
                 .param("exerciseIds", exerciseIds)
                 .param("completedStatus", WorkoutStatus.COMPLETED.databaseValue())
+                .param("standardSetType", WorkoutSetType.STANDARD.databaseValue())
                 .query(HistoricalWeightRepetitionRow.class)
                 .list();
     }
@@ -603,9 +623,13 @@ public class WorkoutRepository {
         for (WorkoutSetRequest set : sets) {
             BigDecimal weight = normalizeWeight(set.weightKg());
             BigDecimal setVolume = weight.multiply(BigDecimal.valueOf(set.repetitions()));
-            BigDecimal estimatedOneRepMax = estimatedOneRepMax(weight, set.repetitions());
             totalVolume = totalVolume.add(setVolume);
             totalRepetitions += set.repetitions();
+            // 递减组贡献真实训练容量，但最大重量、估算 1RM 和同重量次数只由主工作组建立。
+            if (!set.setType().contributesToPerformance()) {
+                continue;
+            }
+            BigDecimal estimatedOneRepMax = estimatedOneRepMax(weight, set.repetitions());
             maxWeight = maxWeight.max(weight);
             maxSetVolume = maxSetVolume.max(setVolume);
             maxEstimatedOneRepMax = maxEstimatedOneRepMax.max(estimatedOneRepMax);
@@ -711,16 +735,31 @@ public class WorkoutRepository {
     /**
      * 使用 Epley 公式估算单次最大重量。
      *
-     * <p>公式除数、计算精度和输出精度均来自业务规则枚举，保持历史计算口径稳定。</p>
+     * <p>公式除数、计算精度和输出步进均来自业务规则枚举。结果统一向下取到
+     * 0.25 kg 的倍数，避免估算值高于保守可展示值，并与历史查询口径保持一致。</p>
      *
      * @param weight 当前组重量
      * @param repetitions 当前组次数
-     * @return 舍入后的估算 1RM
+     * @return 向下取到业务步进后的估算 1RM
      */
     private BigDecimal estimatedOneRepMax(BigDecimal weight, int repetitions) {
-        return roundMetric(weight.multiply(BigDecimal.ONE.add(BigDecimal.valueOf(repetitions)
+        BigDecimal rawValue = weight.multiply(BigDecimal.ONE.add(BigDecimal.valueOf(repetitions)
                 .divide(BigDecimal.valueOf(BusinessRule.ONE_REP_MAX_DIVISOR.value()),
-                        BusinessRule.METRIC_CALCULATION_SCALE.value(), RoundingMode.HALF_UP))));
+                        BusinessRule.METRIC_CALCULATION_SCALE.value(), RoundingMode.HALF_UP)));
+        return floorToStep(rawValue, DecimalBusinessRule.WEIGHT_STEP_KG.value());
+    }
+
+    /**
+     * 将十进制指标保守地向下取到指定步进。
+     *
+     * @param value 原始指标
+     * @param step 大于零的业务步进
+     * @return 不超过原值且落在指定步进上的指标
+     */
+    private BigDecimal floorToStep(BigDecimal value, BigDecimal step) {
+        return value.divide(step, BusinessRule.ZERO_COUNT.value(), RoundingMode.FLOOR)
+                .multiply(step)
+                .stripTrailingZeros();
     }
 
     /**
@@ -800,16 +839,26 @@ public class WorkoutRepository {
             PlanExerciseRequest exercise = exercises.get(index);
             jdbcClient.sql("""
                             INSERT INTO plan_exercise
-                                (plan_id, exercise_id, exercise_order, target_sets, target_reps, rest_seconds)
+                                (plan_id, exercise_id, replacement_exercise_id, exercise_order, target_sets,
+                                 target_reps, rest_seconds, progressive_overload_enabled,
+                                 replacement_progressive_overload_enabled)
                             VALUES
-                                (:planId, :exerciseId, :exerciseOrder, :targetSets, :targetReps, :restSeconds)
+                                (:planId, :exerciseId, :replacementExerciseId, :exerciseOrder, :targetSets,
+                                 :targetReps, :restSeconds, :progressiveOverloadEnabled,
+                                 :replacementProgressiveOverloadEnabled)
                             """)
                     .param("planId", planId)
                     .param("exerciseId", exercise.exerciseId())
+                    .param("replacementExerciseId", exercise.replacementExerciseId(), Types.BIGINT)
                     .param("exerciseOrder", index + BusinessRule.ORDER_INDEX_OFFSET.value())
                     .param("targetSets", exercise.targetSets())
                     .param("targetReps", exercise.targetReps())
                     .param("restSeconds", exercise.restSeconds())
+                    // 旧客户端未传该字段时按关闭写入，不能替用户自动开启渐进推荐。
+                    .param("progressiveOverloadEnabled", Boolean.TRUE.equals(exercise.progressiveOverloadEnabled()))
+                    // 没有替换动作时强制关闭候选开关，避免产生无法归属的渐进配置。
+                    .param("replacementProgressiveOverloadEnabled", exercise.replacementExerciseId() != null
+                            && Boolean.TRUE.equals(exercise.replacementProgressiveOverloadEnabled()))
                     .update();
         }
     }
@@ -861,15 +910,20 @@ public class WorkoutRepository {
             // 该字段与重量、次数处于同一事务中，训练保存失败时会整体回滚。
             jdbcClient.sql("""
                             INSERT INTO set_record
-                                (session_exercise_id, set_number, weight_kg, repetitions, rest_duration_seconds, status, completed_at)
+                                (session_exercise_id, set_number, set_type, weight_kg, repetitions, rpe,
+                                 rest_duration_seconds, status, completed_at)
                             VALUES
-                                (:sessionExerciseId, :setNumber, :weightKg, :repetitions, :restDurationSeconds, :status,
+                                (:sessionExerciseId, :setNumber, :setType, :weightKg, :repetitions, :rpe,
+                                 :restDurationSeconds, :status,
                                  CASE WHEN :status = :completedStatus THEN :endedAt ELSE NULL END)
                             """)
                     .param("sessionExerciseId", sessionExerciseId)
                     .param("setNumber", index + BusinessRule.ORDER_INDEX_OFFSET.value())
+                    .param("setType", set.setType().databaseValue())
                     .param("weightKg", set.weightKg())
                     .param("repetitions", set.repetitions())
+                    .param("rpe", EffortRule.toRpe(completed && set.setType().contributesToPerformance()
+                            ? set.repsInReserve() : null), Types.DECIMAL)
                     .param("restDurationSeconds", set.restDurationSeconds(), Types.INTEGER)
                     .param("status", completed
                             ? WorkoutStatus.COMPLETED.databaseValue()
@@ -932,18 +986,66 @@ public class WorkoutRepository {
      * 描述模板中的一个动作目标。
      *
      * @param exerciseId 动作库主键
+     * @param replacementExerciseId 可空的替换动作主键
      * @param targetSets 目标组数
      * @param targetReps 目标次数
      * @param restSeconds 预设休息秒数
+     * @param progressiveOverloadEnabled 是否为该动作开启渐进超负荷
+     * @param replacementProgressiveOverloadEnabled 是否为替换动作开启渐进超负荷
      */
     public record PlanExerciseRequest(
             @NotNull @Positive Long exerciseId,
+            @Positive Long replacementExerciseId,
             @NotNull @Min(ValidationRule.TARGET_SET_MIN_COUNT)
             @Max(ValidationRule.TARGET_SET_MAX_COUNT) Integer targetSets,
             @NotNull @Min(ValidationRule.TARGET_REPETITION_MIN_COUNT)
             @Max(ValidationRule.REPETITION_MAX_COUNT) Integer targetReps,
             @NotNull @Min(ValidationRule.REST_MIN_SECONDS)
-            @Max(ValidationRule.REST_MAX_SECONDS) Integer restSeconds) {
+            @Max(ValidationRule.REST_MAX_SECONDS) Integer restSeconds,
+            Boolean progressiveOverloadEnabled,
+            Boolean replacementProgressiveOverloadEnabled) {
+
+        /**
+         * 构造包含替换动作但未提供替换动作渐进开关的兼容请求。
+         *
+         * @param exerciseId 动作库主键
+         * @param replacementExerciseId 可空的替换动作主键
+         * @param targetSets 目标组数
+         * @param targetReps 目标次数
+         * @param restSeconds 预设休息秒数
+         * @param progressiveOverloadEnabled 主动作是否开启渐进超负荷
+         */
+        public PlanExerciseRequest(Long exerciseId, Long replacementExerciseId, Integer targetSets,
+                Integer targetReps, Integer restSeconds, Boolean progressiveOverloadEnabled) {
+            this(exerciseId, replacementExerciseId, targetSets, targetReps, restSeconds,
+                    progressiveOverloadEnabled, false);
+        }
+
+        /**
+         * 构造未配置替换动作的渐进超负荷请求。
+         *
+         * @param exerciseId 动作库主键
+         * @param targetSets 目标组数
+         * @param targetReps 目标次数
+         * @param restSeconds 预设休息秒数
+         * @param progressiveOverloadEnabled 是否开启渐进超负荷
+         */
+        public PlanExerciseRequest(Long exerciseId, Integer targetSets, Integer targetReps,
+                Integer restSeconds, Boolean progressiveOverloadEnabled) {
+            this(exerciseId, null, targetSets, targetReps, restSeconds, progressiveOverloadEnabled, false);
+        }
+
+        /**
+         * 构造旧客户端兼容请求；未明确选择时关闭渐进超负荷。
+         *
+         * @param exerciseId 动作库主键
+         * @param targetSets 目标组数
+         * @param targetReps 目标次数
+         * @param restSeconds 预设休息秒数
+         */
+        public PlanExerciseRequest(Long exerciseId, Integer targetSets, Integer targetReps, Integer restSeconds) {
+            this(exerciseId, null, targetSets, targetReps, restSeconds, false, false);
+        }
     }
 
     /**
@@ -999,6 +1101,8 @@ public class WorkoutRepository {
      * @param weightKg 重量
      * @param repetitions 次数
      * @param restDurationSeconds 实际组间歇
+     * @param repsInReserve 完成后估计还能标准完成的次数；3 表示 3 次或更多
+     * @param setType 普通组、热身组或递减组
      * @param completed 是否完成
      */
     public record WorkoutSetRequest(
@@ -1010,7 +1114,48 @@ public class WorkoutRepository {
             // 正向计时可超过模板预设，因此上限按最长训练会话的一天设置。
             @Min(ValidationRule.REST_MIN_SECONDS)
             @Max(ValidationRule.ACTUAL_REST_MAX_SECONDS) Integer restDurationSeconds,
+            @Min(ValidationRule.REPS_IN_RESERVE_MIN_COUNT)
+            @Max(ValidationRule.REPS_IN_RESERVE_MAX_COUNT) Integer repsInReserve,
+            @NotNull WorkoutSetType setType,
             @NotNull Boolean completed) {
+
+        /**
+         * 将旧客户端省略的组类型兼容为普通组。
+         */
+        public WorkoutSetRequest {
+            setType = WorkoutSetType.normalize(setType);
+        }
+
+        /**
+         * 兼容已采集 RIR 但尚未提交组类型的内部调用。
+         *
+         * @param number 客户端显示序号
+         * @param weightKg 重量
+         * @param repetitions 次数
+         * @param restDurationSeconds 实际组间歇
+         * @param repsInReserve 完成后估计还能标准完成的次数
+         * @param completed 是否完成
+         */
+        public WorkoutSetRequest(Integer number, BigDecimal weightKg, Integer repetitions,
+                Integer restDurationSeconds, Integer repsInReserve, Boolean completed) {
+            this(number, weightKg, repetitions, restDurationSeconds, repsInReserve,
+                    WorkoutSetType.STANDARD, completed);
+        }
+
+        /**
+         * 兼容尚未采集 RIR 的内部调用和旧测试数据。
+         *
+         * @param number 客户端显示序号
+         * @param weightKg 重量
+         * @param repetitions 次数
+         * @param restDurationSeconds 实际组间歇
+         * @param completed 是否完成
+         */
+        public WorkoutSetRequest(Integer number, BigDecimal weightKg, Integer repetitions,
+                Integer restDurationSeconds, Boolean completed) {
+            this(number, weightKg, repetitions, restDurationSeconds, null,
+                    WorkoutSetType.STANDARD, completed);
+        }
     }
 
     /**

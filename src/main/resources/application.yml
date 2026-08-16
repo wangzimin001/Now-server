@@ -11,6 +11,10 @@ spring:
     locations: classpath:db/migration
   jackson:
     time-zone: UTC
+  servlet:
+    multipart:
+      max-file-size: 100MB
+      max-request-size: 101MB
 
 server:
   port: ${SERVER_PORT:8081}
@@ -24,3 +28,7 @@ management:
 auth:
   jwt:
     secret: ${AUTH_JWT_SECRET:}
+
+social:
+  upload:
+    directory: ${SOCIAL_UPLOAD_DIRECTORY:uploads/social}

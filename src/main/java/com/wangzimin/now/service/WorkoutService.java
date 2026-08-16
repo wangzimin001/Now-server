@@ -6,13 +6,17 @@ import java.util.List;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import com.wangzimin.now.domain.ApiErrorCode;
+import com.wangzimin.now.domain.DecimalBusinessRule;
 import com.wangzimin.now.repository.WorkoutRepository;
 import com.wangzimin.now.repository.WorkoutRepository.ExercisePerformanceSummary;
+import com.wangzimin.now.repository.WorkoutRepository.PlanExerciseRequest;
 import com.wangzimin.now.repository.WorkoutRepository.WorkoutCompletionRequest;
 import com.wangzimin.now.repository.WorkoutRepository.WorkoutCompletionResponse;
 import com.wangzimin.now.repository.WorkoutRepository.WorkoutExerciseRequest;
 import com.wangzimin.now.repository.WorkoutRepository.WorkoutHistoryUpdateRequest;
 import com.wangzimin.now.repository.WorkoutRepository.WorkoutPlanRequest;
+import com.wangzimin.now.repository.WorkoutRepository.WorkoutSetRequest;
 
 /**
  * 编排训练模板、训练完成和历史纠错写入用例。
@@ -42,6 +46,7 @@ public class WorkoutService {
      */
     @Transactional
     public Long createPlan(WorkoutPlanRequest request) {
+        validatePlanReplacements(request.exercises());
         return repository.createPlan(request);
     }
 
@@ -54,6 +59,7 @@ public class WorkoutService {
      */
     @Transactional
     public Long createPlan(Long userId, WorkoutPlanRequest request) {
+        validatePlanReplacements(request.exercises());
         return repository.createPlan(userId, request);
     }
 
@@ -65,6 +71,7 @@ public class WorkoutService {
      */
     @Transactional
     public void updatePlan(Long planId, WorkoutPlanRequest request) {
+        validatePlanReplacements(request.exercises());
         repository.updatePlan(planId, request);
     }
 
@@ -77,6 +84,7 @@ public class WorkoutService {
      */
     @Transactional
     public void updatePlan(Long userId, Long planId, WorkoutPlanRequest request) {
+        validatePlanReplacements(request.exercises());
         repository.updatePlan(userId, planId, request);
     }
 
@@ -109,6 +117,7 @@ public class WorkoutService {
      */
     @Transactional
     public WorkoutCompletionResponse completeWorkout(WorkoutCompletionRequest request) {
+        validateWeightSteps(request.exercises());
         return repository.completeWorkout(request);
     }
 
@@ -121,6 +130,7 @@ public class WorkoutService {
      */
     @Transactional
     public WorkoutCompletionResponse completeWorkout(Long userId, WorkoutCompletionRequest request) {
+        validateWeightSteps(request.exercises());
         return repository.completeWorkout(userId, request);
     }
 
@@ -135,6 +145,7 @@ public class WorkoutService {
     @Transactional
     public BigDecimal updateWorkoutHistory(
             Long userId, Long sessionId, WorkoutHistoryUpdateRequest request) {
+        request.exercises().forEach(exercise -> validateSetWeightSteps(exercise.sets()));
         return repository.updateWorkoutHistory(userId, sessionId, request);
     }
 
@@ -158,6 +169,51 @@ public class WorkoutService {
      */
     List<ExercisePerformanceSummary> evaluateExercisePerformance(
             Long userId, List<WorkoutExerciseRequest> exercises) {
+        validateWeightSteps(exercises);
         return repository.evaluateExercisePerformance(userId, exercises);
+    }
+
+    /**
+     * 校验模板动作和其替换动作不会指向同一条动作记录。
+     *
+     * <p>该规则在进入仓储前返回稳定业务错误，数据库检查约束继续防止绕过服务层的写入。</p>
+     *
+     * @param exercises 模板中的动作槽位
+     */
+    private void validatePlanReplacements(List<PlanExerciseRequest> exercises) {
+        exercises.stream()
+                .filter(exercise -> exercise.replacementExerciseId() != null)
+                .filter(exercise -> exercise.exerciseId().equals(exercise.replacementExerciseId()))
+                .findFirst()
+                .ifPresent(exercise -> {
+                    throw ApiErrorCode.PLAN_REPLACEMENT_CONFLICT.exception();
+                });
+    }
+
+    /**
+     * 校验训练中每个组的重量都精确落在全局重量步进上。
+     *
+     * <p>该检查位于服务事务入口，任何非法重量都会在 SQL 执行前终止；数据库约束继续作为
+     * 直接写库和未来新入口的最后防线。</p>
+     *
+     * @param exercises 待保存或计算的动作集合
+     */
+    private void validateWeightSteps(List<WorkoutExerciseRequest> exercises) {
+        exercises.forEach(exercise -> validateSetWeightSteps(exercise.sets()));
+    }
+
+    /**
+     * 校验一组训练组记录的重量步进。
+     *
+     * @param sets 同一动作或历史纠错中的组记录
+     */
+    private void validateSetWeightSteps(List<WorkoutSetRequest> sets) {
+        sets.stream()
+                .map(set -> set.weightKg())
+                .filter(weight -> !DecimalBusinessRule.WEIGHT_STEP_KG.isMultiple(weight))
+                .findFirst()
+                .ifPresent(weight -> {
+                    throw ApiErrorCode.WEIGHT_STEP_INVALID.exception();
+                });
     }
 }

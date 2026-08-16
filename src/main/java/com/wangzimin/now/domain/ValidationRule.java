@@ -32,6 +32,8 @@ public enum ValidationRule {
     public static final int REST_MIN_SECONDS = 0;
     public static final int REST_MAX_SECONDS = 600;
     public static final int ACTUAL_REST_MAX_SECONDS = 86_400;
+    public static final int REPS_IN_RESERVE_MIN_COUNT = 0;
+    public static final int REPS_IN_RESERVE_MAX_COUNT = 3;
     public static final int WORKOUT_DURATION_MIN_MINUTES = 1;
     public static final int WORKOUT_DURATION_MAX_MINUTES = 1_440;
     public static final int WORKOUT_EXERCISE_MIN_COUNT = 1;
@@ -39,4 +41,13 @@ public enum ValidationRule {
     public static final int WORKOUT_SET_MIN_COUNT = 1;
     public static final int WORKOUT_SET_MAX_COUNT = 50;
     public static final int CLIENT_RECORD_ID_MAX_LENGTH = 80;
+    public static final int PUBLIC_ID_MAX_LENGTH = 20;
+    public static final int FRIEND_REQUEST_MESSAGE_MAX_LENGTH = 120;
+    public static final int FRIEND_REMARK_MAX_LENGTH = 40;
+    public static final int SOCIAL_MESSAGE_MAX_LENGTH = 2_000;
+    public static final int SOCIAL_POST_MAX_LENGTH = 2_000;
+    public static final int SOCIAL_COMMENT_MAX_LENGTH = 500;
+    public static final int SOCIAL_GROUP_NAME_MIN_LENGTH = 1;
+    public static final int SOCIAL_GROUP_NAME_MAX_LENGTH = 60;
+    public static final int SOCIAL_POST_MEDIA_MAX_COUNT = 9;
 }
