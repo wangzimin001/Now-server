@@ -10,13 +10,14 @@ import java.util.Arrays;
  */
 public enum WorkoutSetType {
 
-    STANDARD("STANDARD", true, true),
-    WARM_UP("WARM_UP", false, false),
-    DROP_SET("DROP_SET", true, false);
+    STANDARD("STANDARD", true, true, true),
+    WARM_UP("WARM_UP", false, false, true),
+    DROP_SET("DROP_SET", true, false, false);
 
     private final String databaseValue;
     private final boolean contributesToVolume;
     private final boolean contributesToPerformance;
+    private final boolean countsAsPrimaryGroup;
 
     /**
      * 创建组类型及其统计语义。
@@ -24,11 +25,14 @@ public enum WorkoutSetType {
      * @param databaseValue 数据库存储值和接口稳定编码
      * @param contributesToVolume 是否计入训练容量与累计次数
      * @param contributesToPerformance 是否计入主工作组纪录与渐进证据
+     * @param countsAsPrimaryGroup 是否在进度和摘要中作为独立组计数
      */
-    WorkoutSetType(String databaseValue, boolean contributesToVolume, boolean contributesToPerformance) {
+    WorkoutSetType(String databaseValue, boolean contributesToVolume, boolean contributesToPerformance,
+            boolean countsAsPrimaryGroup) {
         this.databaseValue = databaseValue;
         this.contributesToVolume = contributesToVolume;
         this.contributesToPerformance = contributesToPerformance;
+        this.countsAsPrimaryGroup = countsAsPrimaryGroup;
     }
 
     /**
@@ -56,6 +60,15 @@ public enum WorkoutSetType {
      */
     public boolean contributesToPerformance() {
         return contributesToPerformance;
+    }
+
+    /**
+     * 判断该记录是否在训练进度和摘要里作为一组独立计数。
+     *
+     * @return 普通组和热身组返回真，附属递减组返回假
+     */
+    public boolean countsAsPrimaryGroup() {
+        return countsAsPrimaryGroup;
     }
 
     /**

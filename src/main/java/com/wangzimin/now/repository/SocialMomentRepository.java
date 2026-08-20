@@ -11,6 +11,7 @@ import org.springframework.stereotype.Repository;
 
 import com.wangzimin.now.domain.BusinessRule;
 import com.wangzimin.now.domain.SystemText;
+import com.wangzimin.now.domain.WorkoutSetType;
 import com.wangzimin.now.domain.WorkoutStatus;
 
 /**
@@ -62,6 +63,7 @@ public class SocialMomentRepository {
                 .param("emptyCursor", BusinessRule.ZERO_COUNT.longValue())
                 .param("limit", limit)
                 .param("completedStatus", WorkoutStatus.COMPLETED.databaseValue())
+                .param("dropSetType", WorkoutSetType.DROP_SET.databaseValue())
                 .query(PostRow.class)
                 .list();
     }
@@ -76,6 +78,7 @@ public class SocialMomentRepository {
         return jdbcClient.sql(postSelect() + " WHERE p.id = :postId AND p.deleted_at IS NULL")
                 .param("postId", postId)
                 .param("completedStatus", WorkoutStatus.COMPLETED.databaseValue())
+                .param("dropSetType", WorkoutSetType.DROP_SET.databaseValue())
                 .query(PostRow.class)
                 .optional();
     }
@@ -190,6 +193,47 @@ public class SocialMomentRepository {
                 .param("completedStatus", WorkoutStatus.COMPLETED.databaseValue())
                 .query(Integer.class)
                 .single() > 0;
+    }
+
+    /**
+     * 查询训练分享卡片需要的动作摘要；动作图片仍从动作库关联读取，不复制到朋友圈表。
+     *
+     * @param workoutSessionId 训练会话主键
+     * @return 按训练顺序排列的动作和已完成组数
+     */
+    public List<WorkoutShareExercise> listWorkoutShareExercises(Long workoutSessionId) {
+        return jdbcClient.sql("""
+                        SELECT se.exercise_id AS exerciseId,
+                               se.exercise_name_snapshot AS name,
+                               COALESCE(
+                                   NULLIF(e.gif_url, ''),
+                                   (
+                                       SELECT gif_candidate.gif_url
+                                       FROM exercise gif_candidate
+                                       WHERE gif_candidate.name = se.exercise_name_snapshot
+                                         AND gif_candidate.gif_url IS NOT NULL
+                                         AND gif_candidate.gif_url <> ''
+                                       ORDER BY gif_candidate.id DESC
+                                       LIMIT 1
+                                   )
+                               ) AS gifUrl,
+                               (
+                                   SELECT COUNT(*)
+                                   FROM set_record sr
+                                   WHERE sr.session_exercise_id = se.id
+                                     AND sr.status = :completedStatus
+                                     AND (sr.set_type IS NULL OR sr.set_type <> :dropSetType)
+                               ) AS setCount
+                        FROM session_exercise se
+                        LEFT JOIN exercise e ON e.id = se.exercise_id
+                        WHERE se.session_id = :workoutSessionId
+                        ORDER BY se.exercise_order, se.id
+                        """)
+                .param("workoutSessionId", workoutSessionId)
+                .param("completedStatus", WorkoutStatus.COMPLETED.databaseValue())
+                .param("dropSetType", WorkoutSetType.DROP_SET.databaseValue())
+                .query(WorkoutShareExercise.class)
+                .list();
     }
 
     /**
@@ -308,17 +352,20 @@ public class SocialMomentRepository {
      *
      * @param postId 帖子主键
      * @param authorUserId 评论人
+     * @param replyToCommentId 可空的被回复评论主键
      * @param content 评论正文
      * @return 新评论主键
      */
-    public long insertComment(Long postId, Long authorUserId, String content) {
+    public long insertComment(Long postId, Long authorUserId, Long replyToCommentId, String content) {
         GeneratedKeyHolder keyHolder = new GeneratedKeyHolder();
         jdbcClient.sql("""
-                        INSERT INTO social_post_comment (post_id, author_user_id, content)
-                        VALUES (:postId, :authorUserId, :content)
+                        INSERT INTO social_post_comment
+                            (post_id, author_user_id, reply_to_comment_id, content)
+                        VALUES (:postId, :authorUserId, :replyToCommentId, :content)
                         """)
                 .param("postId", postId)
                 .param("authorUserId", authorUserId)
+                .param("replyToCommentId", replyToCommentId)
                 .param("content", content)
                 .update(keyHolder, "id");
         Number key = keyHolder.getKey();
@@ -341,11 +388,22 @@ public class SocialMomentRepository {
                         SELECT c.id, c.post_id AS postId, c.author_user_id AS authorUserId,
                                u.public_id AS authorPublicId,
                                COALESCE(NULLIF(f.remark, ''), u.display_name) AS authorDisplayName,
-                               u.avatar_url AS authorAvatarUrl, c.content, c.created_at AS createdAt
+                               u.avatar_url AS authorAvatarUrl,
+                               c.reply_to_comment_id AS replyToCommentId,
+                               replied.author_user_id AS replyToAuthorUserId,
+                               replied_user.public_id AS replyToAuthorPublicId,
+                               COALESCE(NULLIF(replied_friend.remark, ''), replied_user.display_name)
+                                   AS replyToAuthorDisplayName,
+                               c.content, c.created_at AS createdAt
                         FROM social_post_comment c
                         JOIN app_user u ON u.id = c.author_user_id
                         LEFT JOIN friendship f
                           ON f.user_id = :viewerUserId AND f.friend_user_id = u.id
+                        LEFT JOIN social_post_comment replied ON replied.id = c.reply_to_comment_id
+                        LEFT JOIN app_user replied_user ON replied_user.id = replied.author_user_id
+                        LEFT JOIN friendship replied_friend
+                          ON replied_friend.user_id = :viewerUserId
+                         AND replied_friend.friend_user_id = replied_user.id
                         WHERE c.post_id = :postId AND c.deleted_at IS NULL
                         ORDER BY c.id ASC
                         LIMIT :limit
@@ -426,7 +484,8 @@ public class SocialMomentRepository {
                        CASE WHEN ws.status = :completedStatus THEN
                            (SELECT COUNT(*) FROM set_record sr
                             JOIN session_exercise se ON se.id = sr.session_exercise_id
-                            WHERE se.session_id = ws.id AND sr.status = :completedStatus)
+                            WHERE se.session_id = ws.id AND sr.status = :completedStatus
+                              AND (sr.set_type IS NULL OR sr.set_type <> :dropSetType))
                            ELSE NULL END AS workoutSetCount,
                        p.created_at AS createdAt
                 FROM social_post p
@@ -444,9 +503,16 @@ public class SocialMomentRepository {
         return """
                 SELECT c.id, c.post_id AS postId, c.author_user_id AS authorUserId,
                        u.public_id AS authorPublicId, u.display_name AS authorDisplayName,
-                       u.avatar_url AS authorAvatarUrl, c.content, c.created_at AS createdAt
+                       u.avatar_url AS authorAvatarUrl,
+                       c.reply_to_comment_id AS replyToCommentId,
+                       replied.author_user_id AS replyToAuthorUserId,
+                       replied_user.public_id AS replyToAuthorPublicId,
+                       replied_user.display_name AS replyToAuthorDisplayName,
+                       c.content, c.created_at AS createdAt
                 FROM social_post_comment c
                 JOIN app_user u ON u.id = c.author_user_id
+                LEFT JOIN social_post_comment replied ON replied.id = c.reply_to_comment_id
+                LEFT JOIN app_user replied_user ON replied_user.id = replied.author_user_id
                 """;
     }
 
@@ -473,6 +539,17 @@ public class SocialMomentRepository {
             Long workoutSessionId, String workoutName, LocalDateTime workoutCompletedAt,
             Integer workoutDurationMinutes, BigDecimal workoutTotalVolumeKg,
             Integer workoutExerciseCount, Integer workoutSetCount, LocalDateTime createdAt) {
+    }
+
+    /**
+     * 描述训练分享卡片中的一个动作。
+     *
+     * @param exerciseId 动作库主键
+     * @param name 动作名称快照
+     * @param gifUrl 动作库 GIF 地址
+     * @param setCount 已完成组数
+     */
+    public record WorkoutShareExercise(Long exerciseId, String name, String gifUrl, Integer setCount) {
     }
 
     /**
@@ -511,10 +588,16 @@ public class SocialMomentRepository {
      * @param authorPublicId 作者公开 ID
      * @param authorDisplayName 作者名称
      * @param authorAvatarUrl 作者头像
+     * @param replyToCommentId 被回复评论主键
+     * @param replyToAuthorUserId 被回复评论作者主键
+     * @param replyToAuthorPublicId 被回复评论作者公开 ID
+     * @param replyToAuthorDisplayName 被回复评论作者显示名称
      * @param content 正文
      * @param createdAt 发布时间
      */
     public record CommentRow(Long id, Long postId, Long authorUserId, String authorPublicId,
-            String authorDisplayName, String authorAvatarUrl, String content, LocalDateTime createdAt) {
+            String authorDisplayName, String authorAvatarUrl,
+            Long replyToCommentId, Long replyToAuthorUserId, String replyToAuthorPublicId,
+            String replyToAuthorDisplayName, String content, LocalDateTime createdAt) {
     }
 }

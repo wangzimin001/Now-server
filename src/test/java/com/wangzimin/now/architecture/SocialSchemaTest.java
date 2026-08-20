@@ -79,6 +79,19 @@ class SocialSchemaTest {
         assertTrue(migration.contains("idx_social_notification_recipient_unread"));
     }
 
+    /** 验证本机互动演示数据同时生成可见点赞、评论和 Jimmy 的未读通知。 */
+    @Test
+    void unreadMomentDemoContainsVisibleInteractionsAndNotifications() throws IOException {
+        String migration = Files.readString(Path.of(
+                "src/main/resources/db/migration/V34__seed_unread_moment_interactions.sql"));
+
+        assertTrue(migration.contains("INSERT IGNORE INTO social_post_like"));
+        assertTrue(migration.contains("INSERT INTO social_post_comment"));
+        assertTrue(migration.contains("'POST_LIKE'"));
+        assertTrue(migration.contains("'POST_COMMENT'"));
+        assertTrue(migration.contains("read_at = NULL"));
+    }
+
     /** 验证朋友圈查询使用发布时间倒序，且分页沿用同一复合顺序。 */
     @Test
     void socialMomentFeedUsesReverseChronologicalCursor() throws IOException {

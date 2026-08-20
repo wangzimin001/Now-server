@@ -22,6 +22,7 @@ import com.wangzimin.now.domain.ApiPath;
 import com.wangzimin.now.repository.SocialConversationRepository.AttachmentRow;
 import com.wangzimin.now.repository.SocialConversationRepository.ConversationRow;
 import com.wangzimin.now.repository.SocialConversationRepository.MessageRow;
+import com.wangzimin.now.repository.FitnessQueryRepository.WorkoutHistoryDetail;
 import com.wangzimin.now.repository.SocialFriendRepository.FriendRow;
 import com.wangzimin.now.repository.SocialFriendRepository.FriendWorkoutRow;
 import com.wangzimin.now.service.SocialConversationService;
@@ -399,6 +400,19 @@ public class SocialController {
             @RequestParam(required = false) Long beforeId,
             @RequestParam(required = false) Integer limit) {
         return momentService.feed(userId(jwt), beforeId, limit);
+    }
+
+    /**
+     * 查询当前用户可见的训练分享完整详情。
+     *
+     * @param jwt 当前访问令牌
+     * @param postId 动态主键
+     * @return 分享训练的动作和组明细
+     */
+    @GetMapping(ApiPath.MOMENT_WORKOUT_DETAIL_SEGMENT)
+    public WorkoutHistoryDetail momentWorkoutDetail(@AuthenticationPrincipal Jwt jwt,
+            @PathVariable Long postId) {
+        return momentService.workoutDetail(userId(jwt), postId);
     }
 
     /**

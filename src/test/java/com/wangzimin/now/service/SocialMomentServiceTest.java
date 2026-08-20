@@ -9,6 +9,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import java.time.LocalDateTime;
+import java.math.BigDecimal;
 import java.util.List;
 import java.util.Optional;
 
@@ -20,6 +21,8 @@ import com.wangzimin.now.domain.ApiErrorCode;
 import com.wangzimin.now.domain.SocialAttachmentType;
 import com.wangzimin.now.repository.SocialConversationRepository;
 import com.wangzimin.now.repository.SocialConversationRepository.AttachmentRow;
+import com.wangzimin.now.repository.FitnessQueryRepository;
+import com.wangzimin.now.repository.FitnessQueryRepository.WorkoutHistoryDetail;
 import com.wangzimin.now.repository.SocialMomentRepository;
 import com.wangzimin.now.repository.SocialNotificationRepository;
 import com.wangzimin.now.repository.SocialMomentRepository.CommentRow;
@@ -27,6 +30,27 @@ import com.wangzimin.now.repository.SocialMomentRepository.InteractionUserRow;
 import com.wangzimin.now.repository.SocialMomentRepository.PostRow;
 
 class SocialMomentServiceTest {
+
+    /** 验证训练分享详情使用动态作者归属，而不是当前查看者归属。 */
+    @Test
+    void workoutShareDetailUsesPostAuthorOwnership() {
+        SocialMomentRepository repository = mock(SocialMomentRepository.class);
+        SocialConversationRepository attachmentRepository = mock(SocialConversationRepository.class);
+        FitnessQueryRepository fitnessQueryRepository = mock(FitnessQueryRepository.class);
+        SocialMomentService service = new SocialMomentService(
+                repository, attachmentRepository, mock(SocialNotificationRepository.class), fitnessQueryRepository);
+        PostRow post = new PostRow(77L, 2L, "N000000002", "好友", null, "今日训练",
+                55L, "背部训练", LocalDateTime.now(), 42, BigDecimal.valueOf(1200),
+                2, 5, LocalDateTime.now());
+        WorkoutHistoryDetail detail = new WorkoutHistoryDetail(55L, "背部训练", LocalDateTime.now(),
+                42, BigDecimal.valueOf(1200), List.of());
+        when(repository.canViewPost(1L, 77L)).thenReturn(true);
+        when(repository.findPost(77L)).thenReturn(Optional.of(post));
+        when(fitnessQueryRepository.historyDetail(55L, 2L)).thenReturn(detail);
+
+        assertEquals(detail, service.workoutDetail(1L, 77L));
+        verify(fitnessQueryRepository).historyDetail(55L, 2L);
+    }
 
     /** 验证互动预览按当前查看者解析并透传展示名。 */
     @Test
@@ -39,7 +63,8 @@ class SocialMomentServiceTest {
                 null, null, null, null, null, null, null, LocalDateTime.now());
         InteractionUserRow like = new InteractionUserRow("N000000003", "卧推搭子", null);
         CommentRow comment = new CommentRow(11L, 7L, 3L, "N000000003",
-                "卧推搭子", null, "动作很稳", LocalDateTime.now());
+                "卧推搭子", null, null, null, null, null,
+                "动作很稳", LocalDateTime.now());
         int previewLimit = BusinessRule.SOCIAL_INTERACTION_PREVIEW_LIMIT.value();
         when(repository.listVisiblePosts(org.mockito.ArgumentMatchers.eq(1L), anyLong(), anyInt()))
                 .thenReturn(List.of(post));
@@ -181,11 +206,59 @@ class SocialMomentServiceTest {
                 null, null, null, null, null, null, null, LocalDateTime.now());
         when(repository.canViewPost(13L, 61L)).thenReturn(true);
         when(repository.findPost(61L)).thenReturn(Optional.of(post));
-        when(repository.insertComment(61L, 13L, "动作很稳")).thenReturn(71L);
+        when(repository.insertComment(61L, 13L, null, "动作很稳")).thenReturn(71L);
 
         service.comment(13L, 61L,
-                new SocialMomentService.CreateCommentRequest("动作很稳"));
+                new SocialMomentService.CreateCommentRequest("动作很稳", null));
 
         verify(notificationRepository).insertComment(12L, 13L, 61L, 71L);
+    }
+
+    /** 验证回复评论时保存回复目标，并通知被回复用户而不是帖子作者。 */
+    @Test
+    void replyCreatesNotificationForCommentAuthor() {
+        SocialMomentRepository repository = mock(SocialMomentRepository.class);
+        SocialConversationRepository attachmentRepository = mock(SocialConversationRepository.class);
+        SocialNotificationRepository notificationRepository = mock(SocialNotificationRepository.class);
+        SocialMomentService service = new SocialMomentService(
+                repository, attachmentRepository, notificationRepository);
+        PostRow post = new PostRow(61L, 12L, "N000000012", "作者", null, "深蹲训练",
+                null, null, null, null, null, null, null, LocalDateTime.now());
+        CommentRow target = new CommentRow(81L, 61L, 14L, "N000000014",
+                "被回复用户", null, null, null, null, null,
+                "状态不错", LocalDateTime.now());
+        when(repository.canViewPost(13L, 61L)).thenReturn(true);
+        when(repository.findPost(61L)).thenReturn(Optional.of(post));
+        when(repository.findComment(81L)).thenReturn(Optional.of(target));
+        when(repository.insertComment(61L, 13L, 81L, "继续加油")).thenReturn(82L);
+
+        service.comment(13L, 61L,
+                new SocialMomentService.CreateCommentRequest("继续加油", 81L));
+
+        verify(repository).insertComment(61L, 13L, 81L, "继续加油");
+        verify(notificationRepository).insertComment(14L, 13L, 61L, 82L);
+    }
+
+    /** 验证不能把其他帖子的评论当作当前帖子的回复目标。 */
+    @Test
+    void replyTargetMustBelongToSamePost() {
+        SocialMomentRepository repository = mock(SocialMomentRepository.class);
+        SocialConversationRepository attachmentRepository = mock(SocialConversationRepository.class);
+        SocialMomentService service = new SocialMomentService(
+                repository, attachmentRepository, mock(SocialNotificationRepository.class));
+        PostRow post = new PostRow(61L, 12L, "N000000012", "作者", null, "深蹲训练",
+                null, null, null, null, null, null, null, LocalDateTime.now());
+        CommentRow foreignTarget = new CommentRow(91L, 62L, 14L, "N000000014",
+                "其他用户", null, null, null, null, null,
+                "另一条动态的评论", LocalDateTime.now());
+        when(repository.canViewPost(13L, 61L)).thenReturn(true);
+        when(repository.findPost(61L)).thenReturn(Optional.of(post));
+        when(repository.findComment(91L)).thenReturn(Optional.of(foreignTarget));
+
+        ResponseStatusException exception = assertThrows(ResponseStatusException.class,
+                () -> service.comment(13L, 61L,
+                        new SocialMomentService.CreateCommentRequest("错误回复", 91L)));
+
+        assertEquals(ApiErrorCode.COMMENT_NOT_FOUND.status(), exception.getStatusCode());
     }
 }

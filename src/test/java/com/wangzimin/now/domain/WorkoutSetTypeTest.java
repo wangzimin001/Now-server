@@ -12,10 +12,13 @@ class WorkoutSetTypeTest {
     void separatesVolumeAndPerformanceSemantics() {
         assertTrue(WorkoutSetType.STANDARD.contributesToVolume());
         assertTrue(WorkoutSetType.STANDARD.contributesToPerformance());
+        assertTrue(WorkoutSetType.STANDARD.countsAsPrimaryGroup());
         assertFalse(WorkoutSetType.WARM_UP.contributesToVolume());
         assertFalse(WorkoutSetType.WARM_UP.contributesToPerformance());
+        assertTrue(WorkoutSetType.WARM_UP.countsAsPrimaryGroup());
         assertTrue(WorkoutSetType.DROP_SET.contributesToVolume());
         assertFalse(WorkoutSetType.DROP_SET.contributesToPerformance());
+        assertFalse(WorkoutSetType.DROP_SET.countsAsPrimaryGroup());
     }
 
     @Test

@@ -11,6 +11,8 @@ import com.wangzimin.now.domain.ApiErrorCode;
 import com.wangzimin.now.domain.BusinessRule;
 import com.wangzimin.now.domain.SocialAttachmentType;
 import com.wangzimin.now.domain.ValidationRule;
+import com.wangzimin.now.repository.FitnessQueryRepository;
+import com.wangzimin.now.repository.FitnessQueryRepository.WorkoutHistoryDetail;
 import com.wangzimin.now.repository.SocialConversationRepository;
 import com.wangzimin.now.repository.SocialConversationRepository.AttachmentRow;
 import com.wangzimin.now.repository.SocialMomentRepository;
@@ -19,6 +21,7 @@ import com.wangzimin.now.repository.SocialMomentRepository.CommentRow;
 import com.wangzimin.now.repository.SocialMomentRepository.InteractionUserRow;
 import com.wangzimin.now.repository.SocialMomentRepository.PostAttachmentRow;
 import com.wangzimin.now.repository.SocialMomentRepository.PostRow;
+import com.wangzimin.now.repository.SocialMomentRepository.WorkoutShareExercise;
 
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;
@@ -35,6 +38,7 @@ public class SocialMomentService {
     private final SocialMomentRepository repository;
     private final SocialConversationRepository attachmentRepository;
     private final SocialNotificationRepository notificationRepository;
+    private final FitnessQueryRepository fitnessQueryRepository;
 
     /**
      * 创建朋友圈服务。
@@ -46,9 +50,26 @@ public class SocialMomentService {
     public SocialMomentService(SocialMomentRepository repository,
             SocialConversationRepository attachmentRepository,
             SocialNotificationRepository notificationRepository) {
+        this(repository, attachmentRepository, notificationRepository, null);
+    }
+
+    /**
+     * 创建带训练详情查询能力的朋友圈服务。
+     *
+     * @param repository 朋友圈仓储
+     * @param attachmentRepository 附件仓储
+     * @param notificationRepository 朋友圈互动通知仓储
+     * @param fitnessQueryRepository 训练历史查询仓储
+     */
+    @org.springframework.beans.factory.annotation.Autowired
+    public SocialMomentService(SocialMomentRepository repository,
+            SocialConversationRepository attachmentRepository,
+            SocialNotificationRepository notificationRepository,
+            FitnessQueryRepository fitnessQueryRepository) {
         this.repository = repository;
         this.attachmentRepository = attachmentRepository;
         this.notificationRepository = notificationRepository;
+        this.fitnessQueryRepository = fitnessQueryRepository;
     }
 
     /**
@@ -66,6 +87,21 @@ public class SocialMomentService {
         return repository.listVisiblePosts(userId, cursorId, limit).stream()
                 .map(post -> assemblePost(post, userId))
                 .toList();
+    }
+
+    /**
+     * 查询当前用户可见的训练分享详情，并使用动态作者作为训练归属进行校验。
+     *
+     * @param userId 当前查看者主键
+     * @param postId 动态主键
+     * @return 分享训练的完整动作和组明细
+     */
+    public WorkoutHistoryDetail workoutDetail(Long userId, Long postId) {
+        PostRow post = requireVisiblePost(userId, postId);
+        if (post.workoutSessionId() == null || post.workoutName() == null || fitnessQueryRepository == null) {
+            throw ApiErrorCode.WORKOUT_NOT_FOUND.exception();
+        }
+        return fitnessQueryRepository.historyDetail(post.workoutSessionId(), post.authorUserId());
     }
 
     /**
@@ -160,9 +196,19 @@ public class SocialMomentService {
     @Transactional
     public PostView comment(Long userId, Long postId, CreateCommentRequest request) {
         PostRow post = requireVisiblePost(userId, postId);
-        long commentId = repository.insertComment(postId, userId, request.content().trim());
-        if (!userId.equals(post.authorUserId())) {
-            notificationRepository.insertComment(post.authorUserId(), userId, postId, commentId);
+        CommentRow replyTarget = null;
+        if (request.replyToCommentId() != null) {
+            replyTarget = repository.findComment(request.replyToCommentId())
+                    .orElseThrow(ApiErrorCode.COMMENT_NOT_FOUND::exception);
+            if (!postId.equals(replyTarget.postId())) {
+                throw ApiErrorCode.COMMENT_NOT_FOUND.exception();
+            }
+        }
+        long commentId = repository.insertComment(
+                postId, userId, request.replyToCommentId(), request.content().trim());
+        Long recipientUserId = replyTarget == null ? post.authorUserId() : replyTarget.authorUserId();
+        if (!userId.equals(recipientUserId)) {
+            notificationRepository.insertComment(recipientUserId, userId, postId, commentId);
         }
         return assemblePost(post, userId);
     }
@@ -269,7 +315,8 @@ public class SocialMomentService {
         List<CommentRow> comments = repository.listComments(post.id(), userId, previewLimit);
         int likeCount = repository.countLikes(post.id());
         int commentCount = repository.countComments(post.id());
-        return new PostView(post, repository.listPostAttachments(post.id()), likes,
+        List<WorkoutShareExercise> workoutExercises = List.of();
+        return new PostView(post, workoutExercises, repository.listPostAttachments(post.id()), likes,
                 Math.max(likeCount - likes.size(), BusinessRule.ZERO_COUNT.value()),
                 repository.hasLiked(post.id(), userId), comments,
                 Math.max(commentCount - comments.size(), BusinessRule.ZERO_COUNT.value()),
@@ -335,9 +382,11 @@ public class SocialMomentService {
      * 描述发表评论请求。
      *
      * @param content 非空评论正文
+     * @param replyToCommentId 可空的被回复评论主键
      */
     public record CreateCommentRequest(
-            @NotBlank @Size(max = ValidationRule.SOCIAL_COMMENT_MAX_LENGTH) String content) {
+            @NotBlank @Size(max = ValidationRule.SOCIAL_COMMENT_MAX_LENGTH) String content,
+            Long replyToCommentId) {
     }
 
     /**
@@ -352,7 +401,8 @@ public class SocialMomentService {
      * @param hiddenCommentCount 未在预览中展示的评论数量
      * @param ownedByMe 是否由当前用户发布
      */
-    public record PostView(PostRow post, List<PostAttachmentRow> attachments,
+    public record PostView(PostRow post, List<WorkoutShareExercise> workoutExercises,
+            List<PostAttachmentRow> attachments,
             List<InteractionUserRow> likes, int hiddenLikeCount, boolean likedByMe,
             List<CommentRow> comments, int hiddenCommentCount, boolean ownedByMe) {
     }

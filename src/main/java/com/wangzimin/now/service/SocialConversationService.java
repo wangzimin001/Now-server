@@ -170,6 +170,7 @@ public class SocialConversationService {
         repository.upsertMember(conversationId, userId, SocialMemberRole.OWNER);
         members.forEach(member -> repository.upsertMember(
                 conversationId, member.id(), SocialMemberRole.MEMBER));
+        insertSystemMessage(conversationId, userId, SystemText.SYSTEM_GROUP_CREATED.value());
         return group(userId, conversationId);
     }
 
@@ -193,9 +194,13 @@ public class SocialConversationService {
      * @param conversationId 群聊主键
      * @param request 新群名
      */
+    @Transactional
     public void renameGroup(Long userId, Long conversationId, RenameGroupRequest request) {
         requireOwner(conversationId, userId);
-        repository.renameGroup(conversationId, normalizeGroupName(request.name()));
+        String name = normalizeGroupName(request.name());
+        repository.renameGroup(conversationId, name);
+        insertSystemMessage(conversationId, userId,
+                SystemText.SYSTEM_GROUP_RENAMED_PREFIX.value() + name);
     }
 
     /**
@@ -209,15 +214,18 @@ public class SocialConversationService {
     public void addGroupMembers(Long userId, Long conversationId, AddGroupMembersRequest request) {
         requireOwner(conversationId, userId);
         Set<String> publicIds = normalizedPublicIds(request.memberPublicIds());
-        int memberCount = repository.listMembers(conversationId).size() + publicIds.size();
-        validateGroupMemberCount(memberCount);
-        for (String publicId : publicIds) {
-            SocialUserRow friend = friendService.requireFriend(userId, publicId);
-            boolean alreadyMember = repository.listMembers(conversationId).stream()
-                    .anyMatch(member -> member.userId().equals(friend.id()));
-            if (alreadyMember) {
-                throw ApiErrorCode.GROUP_MEMBER_EXISTS.exception();
-            }
+        List<ConversationMemberRow> currentMembers = repository.listMembers(conversationId);
+        Set<Long> currentMemberIds = currentMembers.stream()
+                .map(ConversationMemberRow::userId)
+                .collect(java.util.stream.Collectors.toSet());
+        List<SocialUserRow> friends = publicIds.stream()
+                .map(publicId -> friendService.requireFriend(userId, publicId))
+                .toList();
+        if (friends.stream().anyMatch(friend -> currentMemberIds.contains(friend.id()))) {
+            throw ApiErrorCode.GROUP_MEMBER_EXISTS.exception();
+        }
+        validateGroupMemberCount(currentMembers.size() + friends.size());
+        for (SocialUserRow friend : friends) {
             repository.upsertMember(conversationId, friend.id(), SocialMemberRole.MEMBER);
             insertSystemMessage(conversationId, userId,
                     friend.displayName() + SystemText.SYSTEM_MEMBER_JOINED.value());

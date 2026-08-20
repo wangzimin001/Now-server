@@ -65,6 +65,7 @@ public enum ApiPath {
     public static final String GROUP_LEAVE_SEGMENT = "/groups/{conversationId}/leave";
     public static final String MOMENTS_SEGMENT = "/moments";
     public static final String MOMENT_SEGMENT = "/moments/{postId}";
+    public static final String MOMENT_WORKOUT_DETAIL_SEGMENT = "/moments/{postId}/workout";
     public static final String MOMENT_LIKE_SEGMENT = "/moments/{postId}/like";
     public static final String MOMENT_COMMENTS_SEGMENT = "/moments/{postId}/comments";
     public static final String MOMENT_COMMENT_SEGMENT = "/moments/{postId}/comments/{commentId}";

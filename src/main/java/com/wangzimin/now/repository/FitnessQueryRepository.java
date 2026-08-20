@@ -512,7 +512,9 @@ public class FitnessQueryRepository {
                         SELECT ws.id, ws.name_snapshot AS name, ws.ended_at AS completedAt,
                                ws.duration_minutes AS durationMinutes,
                                COUNT(DISTINCT se.id) AS exerciseCount,
-                               SUM(CASE WHEN sr.status = :completedStatus THEN 1 ELSE 0 END) AS completedSetCount,
+                               SUM(CASE WHEN sr.status = :completedStatus
+                                   AND (sr.set_type IS NULL OR sr.set_type <> :dropSetType)
+                                   THEN 1 ELSE 0 END) AS completedSetCount,
                                ws.total_volume_kg AS totalVolumeKg
                         FROM workout_session ws
                         LEFT JOIN session_exercise se ON se.session_id = ws.id
@@ -525,6 +527,7 @@ public class FitnessQueryRepository {
                         """)
                 .param("userId", userId, Types.BIGINT)
                 .param("completedStatus", WorkoutStatus.COMPLETED.databaseValue())
+                .param("dropSetType", WorkoutSetType.DROP_SET.databaseValue())
                 .param("historyLimit", BusinessRule.HISTORY_RESULT_LIMIT.value())
                 .query(WorkoutHistoryItem.class)
                 .list();
@@ -567,11 +570,24 @@ public class FitnessQueryRepository {
 
         List<WorkoutHistoryExercise> exercises = jdbcClient.sql("""
                         SELECT se.id, se.exercise_id AS exerciseId, se.exercise_name_snapshot AS name,
+                               COALESCE(
+                                   NULLIF(e.gif_url, ''),
+                                   (
+                                       SELECT gif_candidate.gif_url
+                                       FROM exercise gif_candidate
+                                       WHERE gif_candidate.name = se.exercise_name_snapshot
+                                         AND gif_candidate.gif_url IS NOT NULL
+                                         AND gif_candidate.gif_url <> ''
+                                       ORDER BY gif_candidate.id DESC
+                                       LIMIT 1
+                                   )
+                               ) AS gifUrl,
                                se.exercise_order AS exerciseOrder,
                                sr.set_number AS setNumber, sr.set_type AS setType,
                                sr.weight_kg AS weightKg, sr.repetitions, sr.rpe,
                                sr.rest_duration_seconds AS restDurationSeconds, sr.status, sr.completed_at AS completedAt
                         FROM session_exercise se
+                        LEFT JOIN exercise e ON e.id = se.exercise_id
                         LEFT JOIN set_record sr ON sr.session_exercise_id = se.id
                         WHERE se.session_id = :sessionId
                         ORDER BY se.exercise_order, sr.set_number
@@ -581,6 +597,7 @@ public class FitnessQueryRepository {
                         resultSet.getLong("id"),
                         resultSet.getObject("exerciseId", Long.class),
                         resultSet.getString("name"),
+                        resultSet.getString("gifUrl"),
                         resultSet.getInt("exerciseOrder"),
                         resultSet.getObject("setNumber", Integer.class),
                         resultSet.getString("setType"),
@@ -609,7 +626,7 @@ public class FitnessQueryRepository {
                                     row.restDurationSeconds(), EffortRule.toRepsInReserve(row.rpe()),
                                     row.status(), row.completedAt()))
                             .toList();
-                    return new WorkoutHistoryExercise(first.id(), first.exerciseId(), first.name(), first.exerciseOrder(), sets);
+                    return new WorkoutHistoryExercise(first.id(), first.exerciseId(), first.name(), first.gifUrl(), first.exerciseOrder(), sets);
                 })
                 .toList();
 
@@ -661,7 +678,8 @@ public class FitnessQueryRepository {
                         SELECT ranked.sessionExerciseId, ranked.exerciseId, ranked.completedAt,
                                ranked.performanceRank,
                                sr.set_number AS setNumber, sr.set_type AS setType,
-                               sr.weight_kg AS weightKg, sr.repetitions, sr.rpe
+                               sr.weight_kg AS weightKg, sr.repetitions, sr.rpe,
+                               sr.rest_duration_seconds AS restDurationSeconds
                         FROM ranked_exercise ranked
                         JOIN set_record sr ON sr.session_exercise_id = ranked.sessionExerciseId
                         WHERE ranked.performanceRank <= :recentLimit AND sr.status = :completedStatus
@@ -694,8 +712,9 @@ public class FitnessQueryRepository {
                                     sessionRows.get(BusinessRule.ZERO_COUNT.value()).completedAt(),
                                     sessionRows.stream()
                                              .map(row -> new LatestPerformanceSet(row.setNumber(), row.weightKg(),
-                                                     row.repetitions(), EffortRule.toRepsInReserve(row.rpe()),
-                                                     WorkoutSetType.fromDatabaseValue(row.setType())))
+                                                      row.repetitions(), EffortRule.toRepsInReserve(row.rpe()),
+                                                      WorkoutSetType.fromDatabaseValue(row.setType()),
+                                                      row.restDurationSeconds()))
                                             .toList()))
                             .toList();
                     ExercisePerformanceSession latest = recentPerformances.get(BusinessRule.ZERO_COUNT.value());
@@ -846,7 +865,7 @@ public class FitnessQueryRepository {
      *
      * <p>setNumber 可为空，用于表达尚无组记录但仍需返回的动作。</p>
      */
-    private record HistorySetRow(Long id, Long exerciseId, String name, Integer exerciseOrder, Integer setNumber,
+    private record HistorySetRow(Long id, Long exerciseId, String name, String gifUrl, Integer exerciseOrder, Integer setNumber,
             String setType,
             BigDecimal weightKg, Integer repetitions, BigDecimal rpe, Integer restDurationSeconds, String status,
             LocalDateTime completedAt) {
@@ -867,7 +886,7 @@ public class FitnessQueryRepository {
      */
     private record LatestPerformanceSetRow(Long sessionExerciseId, Long exerciseId, LocalDateTime completedAt,
             Integer performanceRank, Integer setNumber, String setType, BigDecimal weightKg,
-            Integer repetitions, BigDecimal rpe) {
+            Integer repetitions, BigDecimal rpe, Integer restDurationSeconds) {
     }
 
     /**
@@ -1255,10 +1274,11 @@ public class FitnessQueryRepository {
      * @param id 会话动作主键
      * @param exerciseId 动作库主键
      * @param name 动作名称快照
+     * @param gifUrl 动作库 GIF 地址
      * @param exerciseOrder 动作顺序
      * @param sets 有序组记录
      */
-    public record WorkoutHistoryExercise(Long id, Long exerciseId, String name, Integer exerciseOrder,
+    public record WorkoutHistoryExercise(Long id, Long exerciseId, String name, String gifUrl, Integer exerciseOrder,
             List<WorkoutSetDetail> sets) {
     }
 
@@ -1319,9 +1339,24 @@ public class FitnessQueryRepository {
      * @param repetitions 次数
      * @param repsInReserve 完成后估计还能标准完成的次数
      * @param setType 训练组用途
+     * @param restDurationSeconds 该组完成后的实际间歇秒数
      */
     public record LatestPerformanceSet(Integer setNumber, BigDecimal weightKg, Integer repetitions,
-            Integer repsInReserve, WorkoutSetType setType) {
+            Integer repsInReserve, WorkoutSetType setType, Integer restDurationSeconds) {
+
+        /**
+         * 兼容尚未包含组间歇的内部调用。
+         *
+         * @param setNumber 组序号
+         * @param weightKg 重量
+         * @param repetitions 次数
+         * @param repsInReserve 完成后估计还能标准完成的次数
+         * @param setType 训练组用途
+         */
+        public LatestPerformanceSet(Integer setNumber, BigDecimal weightKg, Integer repetitions,
+                Integer repsInReserve, WorkoutSetType setType) {
+            this(setNumber, weightKg, repetitions, repsInReserve, setType, null);
+        }
 
         /**
          * 兼容已包含 RIR 但尚无组类型的内部调用。
@@ -1333,7 +1368,7 @@ public class FitnessQueryRepository {
          */
         public LatestPerformanceSet(Integer setNumber, BigDecimal weightKg, Integer repetitions,
                 Integer repsInReserve) {
-            this(setNumber, weightKg, repetitions, repsInReserve, WorkoutSetType.STANDARD);
+            this(setNumber, weightKg, repetitions, repsInReserve, WorkoutSetType.STANDARD, null);
         }
 
         /**
@@ -1344,7 +1379,7 @@ public class FitnessQueryRepository {
          * @param repetitions 次数
          */
         public LatestPerformanceSet(Integer setNumber, BigDecimal weightKg, Integer repetitions) {
-            this(setNumber, weightKg, repetitions, null, WorkoutSetType.STANDARD);
+            this(setNumber, weightKg, repetitions, null, WorkoutSetType.STANDARD, null);
         }
     }
 

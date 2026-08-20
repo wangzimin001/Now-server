@@ -56,6 +56,8 @@ public enum SystemText {
     FILE_NAME_FALLBACK("file"),
     GROUP_DEFAULT_NAME("训练群聊"),
     MESSAGE_DELETED("消息已删除"),
+    SYSTEM_GROUP_CREATED("群聊已创建"),
+    SYSTEM_GROUP_RENAMED_PREFIX("群聊名称已改为："),
     SYSTEM_MEMBER_JOINED("加入了群聊"),
     SYSTEM_MEMBER_LEFT("退出了群聊"),
     SYSTEM_MEMBER_REMOVED("被移出群聊");

@@ -12,6 +12,7 @@ import org.springframework.stereotype.Repository;
 import com.wangzimin.now.domain.FriendRequestStatus;
 import com.wangzimin.now.domain.FriendSortMode;
 import com.wangzimin.now.domain.SystemText;
+import com.wangzimin.now.domain.WorkoutSetType;
 import com.wangzimin.now.domain.WorkoutStatus;
 
 /**
@@ -339,6 +340,7 @@ public class SocialFriendRepository {
                         LEFT JOIN session_exercise se ON se.session_id = ws.id
                         LEFT JOIN set_record sr ON sr.session_exercise_id = se.id
                                                    AND sr.status = :completedStatus
+                                                   AND (sr.set_type IS NULL OR sr.set_type <> :dropSetType)
                         WHERE ws.owner_user_id = :friendUserId AND ws.status = :completedStatus
                         GROUP BY ws.id, ws.name_snapshot, ws.ended_at,
                                  ws.duration_minutes, ws.total_volume_kg
@@ -347,6 +349,7 @@ public class SocialFriendRepository {
                         """)
                 .param("friendUserId", friendUserId)
                 .param("completedStatus", WorkoutStatus.COMPLETED.databaseValue())
+                .param("dropSetType", WorkoutSetType.DROP_SET.databaseValue())
                 .param("limit", limit)
                 .query(FriendWorkoutRow.class)
                 .list();

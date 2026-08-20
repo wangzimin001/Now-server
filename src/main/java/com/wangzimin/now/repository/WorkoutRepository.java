@@ -431,7 +431,7 @@ public class WorkoutRepository {
         PreviousWorkout previous = jdbcClient.sql("""
                         SELECT ws.total_volume_kg AS totalVolumeKg,
                                ws.duration_minutes AS durationMinutes,
-                               SUM(CASE WHEN sr.status = :completedStatus AND sr.set_type <> :warmUpSetType
+                               SUM(CASE WHEN sr.status = :completedStatus AND sr.set_type = :standardSetType
                                    THEN 1 ELSE 0 END) AS completedSetCount
                         FROM workout_session ws
                         LEFT JOIN session_exercise se ON se.session_id = ws.id
@@ -448,7 +448,7 @@ public class WorkoutRepository {
                 .param("planId", request.planId(), Types.BIGINT)
                 .param("name", request.name().trim())
                 .param("completedStatus", WorkoutStatus.COMPLETED.databaseValue())
-                .param("warmUpSetType", WorkoutSetType.WARM_UP.databaseValue())
+                .param("standardSetType", WorkoutSetType.STANDARD.databaseValue())
                 .param("resultLimit", BusinessRule.COLLECTION_MIN_SIZE.value())
                 .query(PreviousWorkout.class)
                 .optional()
@@ -458,7 +458,7 @@ public class WorkoutRepository {
         }
         int completedSetCount = request.exercises().stream()
                 .mapToInt(exercise -> (int) exercise.sets().stream()
-                        .filter(set -> Boolean.TRUE.equals(set.completed()) && set.setType().contributesToVolume())
+                        .filter(set -> Boolean.TRUE.equals(set.completed()) && set.setType().contributesToPerformance())
                         .count())
                 .sum();
         BigDecimal volumeDifference = totalVolume.subtract(previous.totalVolumeKg());
@@ -497,6 +497,9 @@ public class WorkoutRepository {
             List<WorkoutSetRequest> completedSets = exercise.sets().stream()
                     .filter(set -> Boolean.TRUE.equals(set.completed()) && set.setType().contributesToVolume())
                     .toList();
+            int completedPrimarySetCount = (int) exercise.sets().stream()
+                    .filter(set -> Boolean.TRUE.equals(set.completed()) && set.setType().contributesToPerformance())
+                    .count();
             CurrentExerciseMetrics current = currentMetrics(completedSets);
             HistoricalExerciseMetricRow previous = baselines.get(exercise.exerciseId());
             Map<BigDecimal, Integer> previousWeightRepetitions = repetitionsByWeight
@@ -506,7 +509,7 @@ public class WorkoutRepository {
                     : buildAchievements(exercise, current, previous, previousWeightRepetitions);
             PersonalBestSnapshot personalBest = personalBest(current, previous, previousWeightRepetitions);
             summaries.add(new ExercisePerformanceSummary(
-                    exercise.exerciseId(), exercise.name(), completedSets.size(), current.totalRepetitions(),
+                    exercise.exerciseId(), exercise.name(), completedPrimarySetCount, current.totalRepetitions(),
                     current.totalVolumeKg(), current.maxWeightKg(), current.estimatedOneRepMaxKg(),
                     previous == null, achievements, personalBest));
         }
@@ -851,9 +854,9 @@ public class WorkoutRepository {
                     .param("exerciseId", exercise.exerciseId())
                     .param("replacementExerciseId", exercise.replacementExerciseId(), Types.BIGINT)
                     .param("exerciseOrder", index + BusinessRule.ORDER_INDEX_OFFSET.value())
-                    .param("targetSets", exercise.targetSets())
-                    .param("targetReps", exercise.targetReps())
-                    .param("restSeconds", exercise.restSeconds())
+                    .param("targetSets", exercise.targetSets(), Types.INTEGER)
+                    .param("targetReps", exercise.targetReps(), Types.INTEGER)
+                    .param("restSeconds", exercise.restSeconds(), Types.INTEGER)
                     // 旧客户端未传该字段时按关闭写入，不能替用户自动开启渐进推荐。
                     .param("progressiveOverloadEnabled", Boolean.TRUE.equals(exercise.progressiveOverloadEnabled()))
                     // 没有替换动作时强制关闭候选开关，避免产生无法归属的渐进配置。
@@ -996,11 +999,11 @@ public class WorkoutRepository {
     public record PlanExerciseRequest(
             @NotNull @Positive Long exerciseId,
             @Positive Long replacementExerciseId,
-            @NotNull @Min(ValidationRule.TARGET_SET_MIN_COUNT)
+            @Min(ValidationRule.TARGET_SET_MIN_COUNT)
             @Max(ValidationRule.TARGET_SET_MAX_COUNT) Integer targetSets,
-            @NotNull @Min(ValidationRule.TARGET_REPETITION_MIN_COUNT)
+            @Min(ValidationRule.TARGET_REPETITION_MIN_COUNT)
             @Max(ValidationRule.REPETITION_MAX_COUNT) Integer targetReps,
-            @NotNull @Min(ValidationRule.REST_MIN_SECONDS)
+            @Min(ValidationRule.REST_MIN_SECONDS)
             @Max(ValidationRule.REST_MAX_SECONDS) Integer restSeconds,
             Boolean progressiveOverloadEnabled,
             Boolean replacementProgressiveOverloadEnabled) {

@@ -23,6 +23,7 @@ import com.wangzimin.now.repository.FitnessQueryRepository.LatestPerformanceSet;
 import com.wangzimin.now.repository.FitnessQueryRepository.PlanExercise;
 import com.wangzimin.now.repository.FitnessQueryRepository.WorkoutHistoryItem;
 import com.wangzimin.now.repository.FitnessQueryRepository.WorkoutHistoryDetail;
+import com.wangzimin.now.repository.FitnessQueryRepository.WorkoutHistoryExercise;
 import com.wangzimin.now.repository.FitnessQueryRepository.WorkoutPlanResponse;
 import com.wangzimin.now.service.WorkoutService;
 import com.wangzimin.now.repository.WorkoutRepository.PlanExerciseRequest;
@@ -47,6 +48,8 @@ class FitnessControllerTest {
         assertFalse(hasField(WorkoutHistoryItem.class, "level"));
         assertFalse(hasField(WorkoutHistoryItem.class, "difficulty"));
         assertTrue(hasField(WorkoutHistoryItem.class, "completedSetCount"));
+        assertTrue(hasField(WorkoutHistoryExercise.class, "gifUrl"));
+        assertTrue(hasField(LatestPerformanceSet.class, "restDurationSeconds"));
     }
 
     private boolean hasField(Class<?> recordType, String fieldName) {
@@ -135,7 +138,8 @@ class FitnessControllerTest {
         List<LatestExercisePerformance> expected = List.of(new LatestExercisePerformance(
                 100025L,
                 java.time.LocalDateTime.of(2026, 8, 14, 12, 0),
-                List.of(new LatestPerformanceSet(1, BigDecimal.valueOf(60), 8))));
+                List.of(new LatestPerformanceSet(1, BigDecimal.valueOf(60), 8, null,
+                        com.wangzimin.now.domain.WorkoutSetType.STANDARD, 90))));
         when(queryService.latestExercisePerformances(7L, exerciseIds)).thenReturn(expected);
 
         FitnessController controller = new FitnessController(queryService, workoutService);
